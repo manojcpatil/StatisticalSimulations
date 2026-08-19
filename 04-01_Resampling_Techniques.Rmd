@@ -1,0 +1,1223 @@
+---
+title: "Unit 4.1: Resampling Techniques"
+author: "Dr. Manoj C. Patil"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: hide
+    theme: cosmo
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    warning = FALSE,
+    message = FALSE,
+    fig.align = "center",
+    fig.width = 7,
+    fig.height = 4.5
+)
+
+set.seed(123)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(gridExtra)
+library(patchwork)
+```
+
+# Learning Objectives
+
+By the end of this unit, a student should be able to
+
+- explain the bootstrap principle and justify why resampling from the
+  empirical distribution can approximate the sampling distribution of
+  a statistic,
+- derive and implement the bootstrap estimates of bias and standard
+  error for an arbitrary statistic,
+- construct bootstrap confidence intervals using the normal
+  approximation and percentile methods, and state their limitations,
+- derive and implement the jackknife estimates of bias and standard
+  error, and prove the jackknife bias-correction identity for a smooth
+  statistic,
+- compare the bootstrap and jackknife as complementary resampling
+  techniques, and select an appropriate technique for a given
+  statistic,
+- implement all four procedures in R and validate them by simulation
+  against known theoretical benchmarks.
+
+# Prerequisites
+
+Students should be comfortable with
+
+- Units 3.1-3.6 (particularly the generation of pseudo-random samples,
+  since resampling relies on the same uniform-generation machinery),
+- the concepts of bias, standard error, and sampling distribution from
+  a first course in mathematical statistics,
+- the law of large numbers and the central limit theorem,
+- basic Taylor series expansion,
+- R programming, including the `sample()` function and writing
+  functions that operate on data vectors.
+
+# Introduction
+
+Classical statistical inference typically requires a formula for the
+standard error of an estimator, derived analytically from the
+assumed sampling distribution — the formula $s/\sqrt n$ for the
+standard error of a sample mean is the most familiar example. For many
+statistics of practical interest, however, no such closed-form formula
+exists, or exists only under restrictive distributional assumptions
+that may not hold in a given application. The sample median, a
+trimmed mean, a correlation coefficient, or a ratio of two sample
+means are all routinely used in practice, yet none has a standard
+error formula as simple and universally applicable as the one for the
+mean.
+
+Resampling methods resolve this difficulty by using the computer,
+rather than a closed-form formula, to approximate the sampling
+distribution of a statistic. The **bootstrap**, introduced by Bradley
+Efron in his landmark 1979 paper, treats the observed sample itself as
+a stand-in for the population, and approximates the sampling
+distribution of a statistic by repeatedly resampling, with
+replacement, from the observed data and recomputing the statistic on
+each resample. The **jackknife**, developed earlier by Maurice
+Quenouille (1949, 1956) for bias correction and popularized by John
+Tukey (1958) for variance estimation, takes a complementary approach:
+rather than resampling with replacement, it systematically leaves out
+one observation at a time and examines how the statistic changes.
+
+The practical importance of these methods is difficult to overstate in
+modern statistical computing. Bootstrap confidence intervals are now a
+standard tool for regression coefficients, machine learning model
+performance metrics, and virtually any statistic for which an
+analytical standard error is unavailable or untrustworthy. The
+jackknife remains valuable both as a fast, deterministic alternative
+to the bootstrap and, historically, as the conceptual precursor from
+which the bootstrap itself was developed. This unit develops both
+methods in full: their theoretical justification, their exact
+mechanics, and their implementation in R.
+
+# Intuition
+
+The central difficulty in estimating the sampling variability of a
+statistic is that, in practice, only *one* sample is ever observed —
+there is no way to draw many independent samples from the true
+population to see how much the statistic varies from sample to
+sample. The bootstrap's resolution to this problem is a deceptively
+simple substitution: since the observed sample is itself the best
+available estimate of the population, *pretend* the observed sample
+**is** the population, and draw many new samples from it. Because
+resampling from a finite population of $n$ observed values is done
+"with replacement" (each new observation drawn uniformly from the $n$
+observed values, independently, so the same original observation can
+appear multiple times or not at all in a given resample), each
+resample looks like a fresh sample of the same size from the empirical
+distribution, and the spread of the statistic across many such
+resamples imitates the spread that would be seen across many fresh
+real samples.
+
+The jackknife takes a more surgical approach to the same underlying
+question. Instead of asking "what would happen if I drew an entirely
+new random sample," the jackknife asks the narrower question "how
+sensitive is my statistic to the removal of any single observation."
+By recomputing the statistic $n$ times, once with each observation
+left out in turn, the jackknife builds up a picture of how much
+influence each individual data point has, and this picture turns out
+to be enough, for smooth statistics, to estimate both the bias and the
+standard error of the original statistic — using only $n$
+recomputations rather than the thousands typically used by the
+bootstrap.
+
+```{r intuition-figure, echo=FALSE, fig.cap="A bootstrap resample (top) draws n = 8 values with replacement from the original sample, so some original points appear more than once and others not at all; a jackknife sample (bottom) simply omits one observation at a time."}
+set.seed(123)
+original_data <- c(3.1, 5.4, 2.2, 7.8, 4.5, 6.1, 3.9, 5.0)
+n_demo <- length(original_data)
+
+bootstrap_resample <- sample(original_data, size = n_demo, replace = TRUE)
+
+demo_df <- tibble(
+  index = rep(1:n_demo, 2),
+  value = c(original_data, bootstrap_resample),
+  type = rep(c("Original sample", "One bootstrap resample"), each = n_demo)
+)
+
+ggplot(demo_df, aes(x = index, y = value)) +
+  geom_point(size = 3, colour = "steelblue") +
+  geom_segment(aes(xend = index, y = 0, yend = value), colour = "steelblue", alpha = 0.5) +
+  facet_wrap(~type, ncol = 1) +
+  labs(title = "Original sample vs. a single bootstrap resample", x = "Position", y = "Value") +
+  theme_minimal(base_size = 11)
+```
+
+# Formal Definitions
+
+## The Empirical Distribution and the Bootstrap Principle
+
+**Definition.** For an observed sample $x_1,\dots,x_n$, the
+**empirical distribution** $\hat F$ places probability mass $1/n$ on
+each observed value $x_i$. A **bootstrap sample**
+$x_1^{*},\dots,x_n^{*}$ is a sample of size $n$ drawn independently
+with replacement from $\hat F$ — equivalently, each $x_i^{*}$ is drawn
+uniformly at random from $\{x_1,\dots,x_n\}$.
+
+**The bootstrap principle.** For a statistic $\hat\theta =
+T(x_1,\dots,x_n)$ computed from the original sample, the sampling
+distribution of $\hat\theta$ under the true (unknown) population $F$
+is approximated by the distribution of $\hat\theta^{*} =
+T(x_1^{*},\dots,x_n^{*})$ across repeated draws of bootstrap samples
+from $\hat F$, since $\hat F$ is itself a consistent estimate of $F$.
+
+## Bootstrap Estimates of Bias and Standard Error
+
+**Definition.** Given $B$ independent bootstrap samples, each yielding
+a bootstrap replicate $\hat\theta^{*}_b = T(x_1^{*(b)},\dots,
+x_n^{*(b)})$, $b=1,\dots,B$, the **bootstrap estimate of standard
+error** is
+
+$$
+\widehat{\text{se}}_{\text{boot}} = \sqrt{\frac{1}{B-1}
+\sum_{b=1}^{B} \Bigl(\hat\theta^{*}_b - \bar\theta^{*}\Bigr)^2},
+\qquad \bar\theta^{*} = \frac1B\sum_{b=1}^B \hat\theta^{*}_b,
+\tag{1.1}
+$$
+
+and the **bootstrap estimate of bias** is
+
+$$
+\widehat{\text{bias}}_{\text{boot}} = \bar\theta^{*} - \hat\theta.
+\tag{1.2}
+$$
+
+## Jackknife Estimates of Bias and Standard Error
+
+**Definition.** Let $\hat\theta_{(i)} = T(x_1,\dots,x_{i-1},
+x_{i+1},\dots,x_n)$ denote the statistic recomputed with the $i$-th
+observation deleted, for $i=1,\dots,n$, and let
+$\bar\theta_{(\cdot)} = n^{-1}\sum_{i=1}^n \hat\theta_{(i)}$. The
+**jackknife estimate of bias** is
+
+$$
+\widehat{\text{bias}}_{\text{jack}} = (n-1)\bigl(\bar\theta_{(\cdot)} - \hat\theta\bigr),
+\tag{1.3}
+$$
+
+and the **jackknife estimate of standard error** is
+
+$$
+\widehat{\text{se}}_{\text{jack}} = \sqrt{\frac{n-1}{n}
+\sum_{i=1}^{n}\bigl(\hat\theta_{(i)} - \bar\theta_{(\cdot)}\bigr)^2}.
+\tag{1.4}
+$$
+
+The **jackknife bias-corrected estimator** is
+
+$$
+\hat\theta_{\text{jack}} = \hat\theta - \widehat{\text{bias}}_{\text{jack}}
+= n\hat\theta - (n-1)\bar\theta_{(\cdot)}.
+\tag{1.5}
+$$
+
+# Theorems
+
+## Theorem 1.1: Consistency of the Bootstrap Standard Error Estimate
+
+**Statement.** Conditional on the observed data $x_1,\dots,x_n$
+(hence conditional on $\hat F$), as the number of bootstrap
+replications $B\to\infty$,
+
+$$
+\widehat{\text{se}}_{\text{boot}} \;\xrightarrow{\text{a.s.}}\;
+\text{se}_{\hat F}(\hat\theta) := \sqrt{\operatorname{Var}_{\hat F}\bigl(T(X_1^{*},\dots,X_n^{*})\bigr)},
+$$
+
+the exact standard deviation of $T$ under repeated sampling from
+$\hat F$ (the "ideal bootstrap" standard error).
+
+**Assumptions.** $\operatorname{Var}_{\hat F}(\hat\theta^{*}) <
+\infty$; the bootstrap replicates $\hat\theta^{*}_1,\dots,
+\hat\theta^{*}_B$ are, conditional on the data, independent and
+identically distributed draws from the distribution of $T$ under
+resampling from $\hat F$ (by construction, since each bootstrap sample
+is drawn independently).
+
+**Proof.** Conditional on the data, $\hat\theta^{*}_1,
+\dots,\hat\theta^{*}_B$ are i.i.d. with finite variance
+$\sigma^2_{\hat F} = \operatorname{Var}_{\hat F}(\hat\theta^{*})$. By
+the strong law of large numbers applied to $\hat\theta^{*}_b$ and to
+$(\hat\theta^{*}_b)^2$ separately,
+
+$$
+\bar\theta^{*} \xrightarrow{\text{a.s.}} E_{\hat F}(\hat\theta^{*}),
+\qquad
+\frac1B\sum_{b=1}^B (\hat\theta^{*}_b)^2 \xrightarrow{\text{a.s.}} E_{\hat F}\bigl((\hat\theta^{*})^2\bigr),
+$$
+
+as $B\to\infty$. The sample variance in (1.1) (with the usual
+$B/(B-1)$ finite-sample correction, which tends to $1$) is a
+continuous function of these two quantities,
+$\widehat{\text{se}}^2_{\text{boot}} \to E_{\hat F}((\hat\theta^{*})^2)
+- \bigl(E_{\hat F}(\hat\theta^{*})\bigr)^2 = \sigma^2_{\hat F}$, by the
+continuous mapping theorem. Taking square roots (a continuous
+function) preserves almost sure convergence, giving the result.
+$\blacksquare$
+
+**Remarks.** This theorem addresses only the "Monte Carlo error"
+introduced by using a finite number of bootstrap replications $B$; it
+says nothing about how close $\text{se}_{\hat F}(\hat\theta)$ itself
+is to the true sampling standard error under the unknown population
+$F$. That second, statistical (as opposed to computational) source of
+error is controlled separately by the consistency of $\hat F$ for $F$
+as $n\to\infty$, a different and generally harder question addressed
+in the bootstrap consistency literature (Efron, 1979; Bickel &
+Freedman, 1981).
+
+**Examples.** Verified by simulation in Section 10.
+
+**Applications.** This theorem justifies the practical rule of thumb
+that $B=1000$ to $B=2000$ bootstrap replications are usually
+sufficient for standard error estimation (where only the Monte Carlo
+error in (1.1) matters), while confidence interval estimation, which
+depends on the tails of the bootstrap distribution rather than only
+its variance, typically requires a larger $B$ for the same accuracy.
+
+## Theorem 1.2: The Jackknife Removes the Leading Bias Term
+
+**Statement.** Suppose the bias of $\hat\theta_n = T(x_1,\dots,x_n)$,
+as an estimator of $\theta$, admits the expansion
+
+$$
+E(\hat\theta_n) = \theta + \frac{a}{n} + O\Bigl(\frac{1}{n^2}\Bigr)
+\tag{1.6}
+$$
+
+for some constant $a$ not depending on $n$. Then the jackknife
+bias-corrected estimator (1.5) satisfies
+
+$$
+E(\hat\theta_{\text{jack}}) = \theta + O\Bigl(\frac{1}{n^2}\Bigr),
+$$
+
+so the jackknife reduces the order of the bias from $O(1/n)$ to
+$O(1/n^2)$.
+
+**Assumptions.** The expansion (1.6) holds not only for $\hat\theta_n$
+itself but, with the same leading coefficient $a$, for the
+delete-one statistics $\hat\theta_{(i)}$ viewed as an instance of the
+same estimator computed on a sample of size $n-1$, i.e.
+$E(\hat\theta_{(i)}) = \theta + a/(n-1) + O(1/n^2)$ for each $i$; this
+holds for smooth statistics under standard regularity conditions
+(Efron, 1982).
+
+**Proof.** Taking expectations in (1.5) and using linearity,
+
+$$
+E(\hat\theta_{\text{jack}}) = n\,E(\hat\theta_n) - (n-1)\,E(\bar\theta_{(\cdot)}).
+$$
+
+By the assumption, $E(\hat\theta_{(i)}) = \theta + a/(n-1) + O(1/n^2)$
+for every $i$, so $E(\bar\theta_{(\cdot)}) = \theta + a/(n-1) +
+O(1/n^2)$ as well (the average of $n$ terms each with the same
+expansion has that same expansion). Substituting both expansions,
+
+$$
+\begin{aligned}
+E(\hat\theta_{\text{jack}})
+&= n\Bigl(\theta + \frac{a}{n} + O\bigl(\tfrac1{n^2}\bigr)\Bigr)
+- (n-1)\Bigl(\theta + \frac{a}{n-1} + O\bigl(\tfrac1{n^2}\bigr)\Bigr) \\
+&= \bigl(n\theta + a + O(\tfrac1n)\bigr) - \bigl((n-1)\theta + a + O(\tfrac1n)\bigr) \\
+&= \theta + O\Bigl(\frac1n\Bigr)\cdot n - O\Bigl(\frac1n\Bigr)\cdot(n-1)
+\end{aligned}
+$$
+
+where multiplying the $O(1/n^2)$ remainder terms by $n$ and by
+$n-1$ respectively leaves an $O(1/n)$ contribution from each; a more
+careful accounting (retaining the next term $b/n^2$ in (1.6)
+explicitly) shows these two $O(1/n)$-after-multiplication contributions
+in fact cancel to leading order, leaving a net remainder of
+$O(1/n^2)$ — the full accounting is a routine but notationally heavy
+exercise in collecting terms, carried out in full in Efron (1982,
+Ch. 2). The leading terms $n\theta$ and $-(n-1)\theta$ combine to
+$\theta$, and the leading terms $a$ and $-a$ cancel exactly,
+confirming that both the $O(1)$ and the $O(1/n)$ parts of the bias are
+eliminated, leaving $E(\hat\theta_{\text{jack}}) = \theta +
+O(1/n^2)$. $\blacksquare$
+
+**Remarks.** The exact cancellation of the $a$ coefficient — not just
+its order of magnitude — is the key mechanism: the jackknife estimate
+of bias, $(n-1)(\bar\theta_{(\cdot)}-\hat\theta_n)$, is constructed
+precisely so that it converges to $a/n$, the leading bias term itself,
+which is why subtracting it removes exactly that term. For a small
+number of classical statistics (including the variance estimator
+worked out in Example 2 below), the bias expansion (1.6) is *exact*
+with no remainder at all, so the jackknife correction removes the bias
+completely rather than merely to a higher order.
+
+**Examples.** A fully exact worked example (no remainder term at all)
+is given in Section 12, Example 2.
+
+**Applications.** Bias correction of this kind is routinely used for
+ratio estimators in survey sampling, for maximum likelihood variance
+estimators, and for correlation and $R^2$-type statistics in
+regression, all of which have bias of exactly the form (1.6) to
+leading order.
+
+# Mathematical Derivations
+
+## The Jackknife Standard Error Reduces to the Classical Formula for the Mean
+
+For the sample mean, $\hat\theta_n = \bar x = n^{-1}\sum_i x_i$, the
+delete-one mean is $\hat\theta_{(i)} = (n\bar x - x_i)/(n-1)$, obtained
+by removing $x_i$ from the total and dividing by the remaining $n-1$
+observations. First,
+
+$$
+\hat\theta_{(i)} - \bar\theta_{(\cdot)}
+= \frac{n\bar x - x_i}{n-1} - \bar x
+= \frac{n\bar x - x_i - (n-1)\bar x}{n-1}
+= \frac{\bar x - x_i}{n-1} = -\frac{x_i - \bar x}{n-1},
+\tag{1.7}
+$$
+
+using $\bar\theta_{(\cdot)} = \bar x$ exactly (an identity verified
+directly: $\sum_i \hat\theta_{(i)} = \sum_i (n\bar x - x_i)/(n-1)
+= (n^2\bar x - n\bar x)/(n-1) = n\bar x$, so
+$\bar\theta_{(\cdot)}=\bar x$). Substituting (1.7) into the jackknife
+standard error formula (1.4),
+
+$$
+\widehat{\text{se}}_{\text{jack}}^2 = \frac{n-1}{n}\sum_{i=1}^n
+\frac{(x_i-\bar x)^2}{(n-1)^2}
+= \frac{1}{n(n-1)}\sum_{i=1}^n (x_i-\bar x)^2 = \frac{s^2}{n},
+\tag{1.8}
+$$
+
+where $s^2 = (n-1)^{-1}\sum_i (x_i-\bar x)^2$ is the usual sample
+variance. Hence $\widehat{\text{se}}_{\text{jack}} = s/\sqrt n$ exactly
+reproduces the classical standard error formula for the mean — a
+useful sanity check confirming the jackknife formula (1.4) is
+correctly normalized.
+
+## Types of Bootstrap Confidence Intervals
+
+**Normal-approximation interval.** Treating $\hat\theta$ as
+approximately Normally distributed with standard error
+$\widehat{\text{se}}_{\text{boot}}$ gives
+
+$$
+\hat\theta \pm z_{1-\alpha/2}\, \widehat{\text{se}}_{\text{boot}}.
+\tag{1.9}
+$$
+
+This is simple but ignores any skewness in the bootstrap distribution
+of $\hat\theta^{*}$.
+
+**Percentile interval.** Using the empirical $\alpha/2$ and
+$1-\alpha/2$ quantiles of the bootstrap replicates
+$\hat\theta^{*}_1,\dots,\hat\theta^{*}_B$ directly,
+
+$$
+\bigl(\hat\theta^{*}_{(\lceil B\alpha/2\rceil)},\;
+\hat\theta^{*}_{(\lceil B(1-\alpha/2)\rceil)}\bigr),
+\tag{1.10}
+$$
+
+where $\hat\theta^{*}_{(k)}$ denotes the $k$-th order statistic of the
+bootstrap replicates. The percentile interval automatically adapts to
+skewness in the bootstrap distribution and is transformation-respecting
+(applying a monotone transformation to $\hat\theta$ and then computing
+a percentile interval gives the same interval, transformed, as
+computing the percentile interval first and then transforming its
+endpoints) — a property the normal-approximation interval lacks.
+
+# Algorithms
+
+## Algorithm 1.1: Bootstrap Estimation of Bias and Standard Error
+
+**Purpose.** Estimate the bias and standard error of an arbitrary
+statistic without an analytical formula.
+
+**Input.** Sample $x_1,\dots,x_n$; statistic function $T(\cdot)$;
+number of bootstrap replications $B$.
+
+**Output.** $\widehat{\text{bias}}_{\text{boot}}$,
+$\widehat{\text{se}}_{\text{boot}}$.
+
+**Step-by-step procedure.**
+
+1. Compute $\hat\theta = T(x_1,\dots,x_n)$.
+2. For $b=1,\dots,B$: draw a bootstrap sample of size $n$ with
+   replacement from $\{x_1,\dots,x_n\}$; compute
+   $\hat\theta^{*}_b = T(\cdot)$ on this resample.
+3. Compute $\widehat{\text{bias}}_{\text{boot}}$ via (1.2) and
+   $\widehat{\text{se}}_{\text{boot}}$ via (1.1).
+
+**Pseudo-code.**
+
+```
+Algorithm: Bootstrap Bias and Standard Error
+Input:  x[1..n], T(), B
+Output: bias_boot, se_boot
+
+1. theta_hat <- T(x)
+2. For b = 1 to B:
+       x_star <- sample(x, size = n, replace = TRUE)
+       theta_star[b] <- T(x_star)
+3. bias_boot <- mean(theta_star) - theta_hat
+4. se_boot <- sd(theta_star)
+5. Return bias_boot, se_boot
+```
+
+**Flowchart description.** Start; compute the statistic on the
+original sample; repeat $B$ times: draw a with-replacement resample of
+size $n$, recompute the statistic; after the loop, compute the mean
+and standard deviation of the $B$ replicates; report bias and standard
+error; end.
+
+**Complexity.** $O(Bn)$ for the resampling itself, plus $O(B\cdot
+c(T))$ where $c(T)$ is the cost of one evaluation of the statistic.
+
+**Practical considerations.** $B=1000$-$2000$ is generally adequate
+for standard error estimation (Theorem 1.1); confidence intervals,
+especially percentile intervals, benefit from larger $B$ (often
+$B\ge 2000$-$5000$) since they depend on tail quantiles rather than
+only the overall spread.
+
+## Algorithm 1.2: Bootstrap Percentile Confidence Interval
+
+**Purpose.** Construct a confidence interval for $\theta$ that adapts
+to skewness in the bootstrap distribution.
+
+**Input.** Sample $x_1,\dots,x_n$; statistic function $T(\cdot)$;
+number of replications $B$; confidence level $1-\alpha$.
+
+**Output.** Interval $(\hat\theta^{*}_{\text{lower}},
+\hat\theta^{*}_{\text{upper}})$.
+
+**Step-by-step procedure.**
+
+1. Generate $B$ bootstrap replicates $\hat\theta^{*}_1,\dots,
+   \hat\theta^{*}_B$ as in Algorithm 1.1.
+2. Sort the replicates and take the empirical $\alpha/2$ and
+   $1-\alpha/2$ quantiles as in (1.10).
+
+**Pseudo-code.**
+
+```
+Algorithm: Bootstrap Percentile Interval
+Input:  x[1..n], T(), B, alpha
+Output: (lower, upper)
+
+1. Generate theta_star[1..B] as in Algorithm 1.1
+2. lower  <- quantile(theta_star, alpha / 2)
+3. upper  <- quantile(theta_star, 1 - alpha / 2)
+4. Return (lower, upper)
+```
+
+**Flowchart description.** Start; generate $B$ bootstrap replicates;
+sort them; read off the empirical quantiles at the two tail
+probabilities; report the resulting interval; end.
+
+**Complexity.** $O(Bn + B\log B)$, the additional $B\log B$ coming
+from sorting the replicates.
+
+**Practical considerations.** The percentile interval can perform
+poorly (be biased or too narrow) when the bootstrap distribution of
+$\hat\theta^{*}$ is itself substantially biased or skewed relative to
+$\theta$; the bias-corrected and accelerated (BCa) interval (Efron,
+1987) addresses this at the cost of additional computation, and is
+recommended over the plain percentile interval whenever high accuracy
+is required.
+
+## Algorithm 1.3: Jackknife Estimation of Bias and Standard Error
+
+**Purpose.** Estimate bias and standard error using $n$ deterministic
+leave-one-out recomputations rather than random resampling.
+
+**Input.** Sample $x_1,\dots,x_n$; statistic function $T(\cdot)$.
+
+**Output.** $\widehat{\text{bias}}_{\text{jack}}$,
+$\widehat{\text{se}}_{\text{jack}}$.
+
+**Step-by-step procedure.**
+
+1. Compute $\hat\theta = T(x_1,\dots,x_n)$.
+2. For $i=1,\dots,n$: compute
+   $\hat\theta_{(i)} = T(x_1,\dots,x_{i-1},x_{i+1},\dots,x_n)$.
+3. Compute $\bar\theta_{(\cdot)}$, then
+   $\widehat{\text{bias}}_{\text{jack}}$ via (1.3) and
+   $\widehat{\text{se}}_{\text{jack}}$ via (1.4).
+
+**Pseudo-code.**
+
+```
+Algorithm: Jackknife Bias and Standard Error
+Input:  x[1..n], T()
+Output: bias_jack, se_jack
+
+1. theta_hat <- T(x)
+2. For i = 1 to n:
+       theta_i[i] <- T(x with element i removed)
+3. theta_bar <- mean(theta_i)
+4. bias_jack <- (n - 1) * (theta_bar - theta_hat)
+5. se_jack <- sqrt((n - 1) / n * sum((theta_i - theta_bar)^2))
+6. Return bias_jack, se_jack
+```
+
+**Flowchart description.** Start; compute the statistic on the full
+sample; for each observation in turn, remove it and recompute the
+statistic; after all $n$ recomputations, compute their mean and sum of
+squared deviations; report bias and standard error; end.
+
+**Complexity.** $O(n\cdot c(T))$, exactly $n$ evaluations of the
+statistic, with no random resampling required.
+
+**Practical considerations.** The jackknife can fail for
+non-smooth statistics — most notoriously the sample median, for which
+the jackknife standard error estimate is inconsistent (it does not
+converge to the correct value even as $n\to\infty$); the bootstrap
+does not share this defect and is generally preferred for such
+statistics.
+
+# R Programming
+
+```{r resampling-functions}
+set.seed(123)
+
+#' Bootstrap estimates of bias and standard error
+#'
+#' Purpose: implements Algorithm 1.1.
+#'
+#' Arguments:
+#'   sample_data          numeric vector, the observed sample
+#'   statistic_function   function mapping a numeric vector to a scalar
+#'   number_of_replicates number of bootstrap resamples (default 2000)
+#'
+#' Returns:
+#'   a list with the original estimate, bootstrap bias, bootstrap
+#'   standard error, and the full vector of bootstrap replicates
+#'
+#' Example:
+#'   bootstrap_estimate(rnorm(30), mean, number_of_replicates = 1000)
+bootstrap_estimate <- function(sample_data, statistic_function, number_of_replicates = 2000) {
+  sample_size <- length(sample_data)
+  original_estimate <- statistic_function(sample_data)
+
+  bootstrap_replicates <- numeric(number_of_replicates)
+  for (replicate_index in seq_len(number_of_replicates)) {
+    resampled_data <- sample(sample_data, size = sample_size, replace = TRUE)
+    bootstrap_replicates[replicate_index] <- statistic_function(resampled_data)
+  }
+
+  list(
+    estimate = original_estimate,
+    bootstrap_bias = mean(bootstrap_replicates) - original_estimate,
+    bootstrap_se = sd(bootstrap_replicates),
+    replicates = bootstrap_replicates
+  )
+}
+
+#' Bootstrap percentile confidence interval
+#'
+#' Purpose: implements Algorithm 1.2.
+#'
+#' Arguments:
+#'   sample_data          numeric vector, the observed sample
+#'   statistic_function   function mapping a numeric vector to a scalar
+#'   number_of_replicates number of bootstrap resamples (default 2000)
+#'   confidence_level     confidence level (default 0.95)
+#'
+#' Returns:
+#'   a named numeric vector with the lower and upper interval endpoints
+#'
+#' Example:
+#'   bootstrap_percentile_ci(rnorm(30), mean)
+bootstrap_percentile_ci <- function(sample_data, statistic_function,
+                                     number_of_replicates = 2000, confidence_level = 0.95) {
+  boot_result <- bootstrap_estimate(sample_data, statistic_function, number_of_replicates)
+  alpha <- 1 - confidence_level
+
+  quantile(boot_result$replicates, probs = c(alpha / 2, 1 - alpha / 2))
+}
+
+#' Jackknife estimates of bias and standard error
+#'
+#' Purpose: implements Algorithm 1.3.
+#'
+#' Arguments:
+#'   sample_data          numeric vector, the observed sample
+#'   statistic_function   function mapping a numeric vector to a scalar
+#'
+#' Returns:
+#'   a list with the original estimate, jackknife bias, jackknife
+#'   standard error, the bias-corrected estimate, and the vector of
+#'   leave-one-out replicates
+#'
+#' Example:
+#'   jackknife_estimate(rnorm(30), mean)
+jackknife_estimate <- function(sample_data, statistic_function) {
+  sample_size <- length(sample_data)
+  original_estimate <- statistic_function(sample_data)
+
+  leave_one_out_replicates <- numeric(sample_size)
+  for (index in seq_len(sample_size)) {
+    leave_one_out_replicates[index] <- statistic_function(sample_data[-index])
+  }
+
+  mean_leave_one_out <- mean(leave_one_out_replicates)
+  jackknife_bias <- (sample_size - 1) * (mean_leave_one_out - original_estimate)
+  jackknife_se <- sqrt(
+    (sample_size - 1) / sample_size *
+      sum((leave_one_out_replicates - mean_leave_one_out)^2)
+  )
+
+  list(
+    estimate = original_estimate,
+    jackknife_bias = jackknife_bias,
+    jackknife_se = jackknife_se,
+    bias_corrected_estimate = original_estimate - jackknife_bias,
+    replicates = leave_one_out_replicates
+  )
+}
+```
+
+# Simulation Studies
+
+## Bootstrap Standard Error Convergence (Theorem 1.1)
+
+```{r bootstrap-convergence-simulation}
+set.seed(123)
+
+fixed_sample <- rnorm(30, mean = 5, sd = 2)
+true_theoretical_se <- sd(fixed_sample) / sqrt(length(fixed_sample))
+
+replication_counts <- c(10, 50, 200, 500, 1000, 5000, 20000)
+se_estimates <- vapply(
+  replication_counts,
+  function(B) bootstrap_estimate(fixed_sample, mean, number_of_replicates = B)$bootstrap_se,
+  numeric(1)
+)
+
+tibble(B = replication_counts, Bootstrap_SE = se_estimates, Classical_SE = true_theoretical_se) %>%
+  kable(digits = 4, caption = "Bootstrap SE of the mean converges to the classical formula s/sqrt(n) as B grows")
+```
+
+## Jackknife Bias Correction for the Variance Estimator
+
+For $X_1,\dots,X_n$ i.i.d. Normal$(\mu,\sigma^2)$, the plug-in
+(divide-by-$n$) variance estimator
+$\hat\sigma^2_n = n^{-1}\sum_i (X_i-\bar X)^2$ has the exact bias
+$E(\hat\sigma^2_n) - \sigma^2 = -\sigma^2/n$, matching the form of
+(1.6) exactly with $a=-\sigma^2$ and no remainder term.
+
+```{r jackknife-variance-bias-simulation}
+set.seed(123)
+
+plugin_variance <- function(x) mean((x - mean(x))^2)
+
+true_sigma_squared <- 4
+number_of_datasets <- 3000
+sample_size_n <- 15
+
+bias_estimates <- replicate(number_of_datasets, {
+  simulated_sample <- rnorm(sample_size_n, mean = 0, sd = sqrt(true_sigma_squared))
+  jackknife_estimate(simulated_sample, plugin_variance)$jackknife_bias
+})
+
+tibble(
+  Quantity = c("Theoretical bias (-sigma^2 / n)", "Average jackknife bias estimate"),
+  Value = c(-true_sigma_squared / sample_size_n, mean(bias_estimates))
+) %>%
+  kable(digits = 4, caption = "Jackknife bias estimate vs. the exact theoretical bias of the plug-in variance estimator")
+```
+
+## Coverage of the Bootstrap Percentile Confidence Interval
+
+```{r bootstrap-coverage-simulation}
+set.seed(123)
+
+number_of_trials <- 500
+sample_size_coverage <- 25
+true_mean <- 10
+coverage_indicator <- logical(number_of_trials)
+
+for (trial in seq_len(number_of_trials)) {
+  trial_sample <- rnorm(sample_size_coverage, mean = true_mean, sd = 3)
+  interval <- bootstrap_percentile_ci(trial_sample, mean, number_of_replicates = 500)
+  coverage_indicator[trial] <- (interval[1] <= true_mean) && (true_mean <= interval[2])
+}
+
+tibble(
+  Quantity = c("Nominal coverage", "Empirical coverage (500 trials)"),
+  Value = c(0.95, mean(coverage_indicator))
+) %>%
+  kable(digits = 4, caption = "Empirical coverage of the 95% bootstrap percentile interval for the mean")
+```
+
+# Graphs
+
+```{r bootstrap-distribution-plot, fig.cap="Bootstrap distribution of the sample mean, with the normal-approximation and percentile 95% intervals marked."}
+set.seed(123)
+
+boot_result_plot <- bootstrap_estimate(fixed_sample, mean, number_of_replicates = 3000)
+normal_ci <- boot_result_plot$estimate + c(-1, 1) * qnorm(0.975) * boot_result_plot$bootstrap_se
+percentile_ci <- quantile(boot_result_plot$replicates, probs = c(0.025, 0.975))
+
+ggplot(tibble(theta_star = boot_result_plot$replicates), aes(x = theta_star)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 40, fill = "steelblue", colour = "white") +
+  geom_vline(xintercept = normal_ci, colour = "darkred", linetype = "dashed", linewidth = 0.8) +
+  geom_vline(xintercept = percentile_ci, colour = "darkgreen", linetype = "dotted", linewidth = 0.8) +
+  labs(
+    title = "Bootstrap distribution of the sample mean (n = 30)",
+    subtitle = "Dashed red = normal-approximation CI; dotted green = percentile CI",
+    x = expression(hat(theta)^"*"), y = "Density"
+  ) +
+  theme_minimal(base_size = 11)
+```
+
+```{r jackknife-leave-one-out-plot, fig.cap="Leave-one-out means for the illustrative dataset of Section 12, showing the influence of each observation."}
+illustrative_data <- c(5, 7, 9, 12, 14)
+jackknife_illustrative <- jackknife_estimate(illustrative_data, mean)
+
+ggplot(
+  tibble(observation_removed = illustrative_data, leave_one_out_mean = jackknife_illustrative$replicates),
+  aes(x = factor(observation_removed), y = leave_one_out_mean)
+) +
+  geom_col(fill = "darkorange", width = 0.6) +
+  geom_hline(yintercept = jackknife_illustrative$estimate, colour = "black", linetype = "dashed") +
+  labs(
+    title = "Leave-one-out sample means",
+    x = "Observation removed", y = "Mean of remaining 4 observations"
+  ) +
+  theme_minimal(base_size = 11)
+```
+
+# Numerical Examples
+
+**Example 1: Bootstrap and jackknife standard error of the mean.**
+
+*Problem.* For the sample $x = (5, 7, 9, 12, 14)$ ($n=5$), compute the
+classical, jackknife, and (conceptually) bootstrap standard errors of
+the sample mean.
+
+*Solution.* $\bar x = 47/5 = 9.4$. The sample variance is
+$s^2 = 53.2/4 = 13.3$, giving the classical standard error
+$s/\sqrt5 = 3.6469/2.2361 = 1.6309$.
+
+For the jackknife, the leave-one-out means are $10.5, 10.0, 9.5,
+8.75, 8.25$ (removing $5,7,9,12,14$ respectively), with
+$\bar\theta_{(\cdot)} = 9.4$ (exactly $\bar x$, as shown in Section
+8.1). The sum of squared deviations of the leave-one-out means from
+$9.4$ is $1.1^2+0.6^2+0.1^2+(-0.65)^2+(-1.15)^2 = 3.325$, so
+
+$$
+\widehat{\text{se}}_{\text{jack}} = \sqrt{\frac{4}{5}\times 3.325}
+= \sqrt{2.66} = 1.6310,
+$$
+
+matching the classical value to rounding error, exactly as (1.8)
+guarantees.
+
+*Interpretation.* This example both illustrates the mechanics of the
+jackknife and validates it: because the sample mean has a known
+closed-form standard error, computing the jackknife estimate by hand
+and confirming it reproduces $s/\sqrt n$ builds confidence in the
+general formula before applying it to statistics without a known
+closed form.
+
+**Example 2: Exact jackknife bias correction of the plug-in variance.**
+
+*Problem.* For the same sample, compute the plug-in (divide-by-$n$)
+variance estimate $\hat\sigma^2_n$, its jackknife bias estimate, and
+the bias-corrected estimator, and compare to the classical
+divide-by-$(n-1)$ estimator.
+
+*Solution.* $\hat\sigma^2_n = 53.2/5 = 10.64$. The five leave-one-out
+plug-in variances (computed on the four remaining points each time)
+are $7.25, 11.5, 13.25, 11.1875, 6.6875$, averaging to
+$\bar\theta_{(\cdot)} = 9.975$. Hence
+
+$$
+\widehat{\text{bias}}_{\text{jack}} = 4\times(9.975-10.64) = -2.66,
+$$
+
+and the bias-corrected estimator is
+$\hat\theta_{\text{jack}} = 10.64-(-2.66) = 13.30$, which is *exactly*
+$s^2$, the classical unbiased variance estimator computed in Example
+1.
+
+*Interpretation.* For the variance statistic, the jackknife
+bias correction is not merely an asymptotic $O(1/n^2)$ improvement
+(Theorem 1.2); it recovers the exactly unbiased estimator with no
+remainder at all, because the bias of the plug-in variance estimator
+is *exactly* $-\sigma^2/n$ with no higher-order terms — this is the
+special case referenced in the Remarks following Theorem 1.2.
+
+# Applications
+
+- **Statistics.** Bootstrap confidence intervals are now standard for
+  regression coefficients, correlation and $R^2$ statistics, and any
+  estimator lacking a tractable analytical standard error.
+- **Machine Learning.** Bootstrap resampling underlies bagging
+  (bootstrap aggregating) and random forests directly, and is widely
+  used to construct confidence intervals for cross-validated
+  performance metrics.
+- **Data Science.** Quantifying uncertainty in ad hoc summary
+  statistics (medians, quantiles, custom business metrics) computed on
+  observational data, where no analytical formula is available.
+- **Finance.** Bootstrap resampling of historical returns is used to
+  estimate the sampling variability of portfolio risk measures without
+  assuming a specific parametric return distribution.
+- **Reliability Engineering.** Jackknife and bootstrap bias correction
+  for reliability function estimators computed from censored failure
+  time data.
+- **Monte Carlo Methods.** The bootstrap is itself a Monte Carlo
+  technique, connecting directly to the simulation methods developed
+  throughout Unit 3.
+- **Bayesian Statistics.** The bootstrap has a Bayesian analogue (the
+  Bayesian bootstrap, Rubin 1981) and bootstrap ideas inform the
+  construction of approximate posterior predictive checks.
+- **Operations Research.** Bootstrap confidence intervals for
+  simulation output statistics (e.g. mean queue length) when the
+  underlying distribution of simulation replications is not Normal.
+- **Engineering.** Jackknife bias correction of parameter estimates in
+  fitted degradation or fatigue models with small sample sizes.
+
+# Advantages
+
+- Both methods require no analytical derivation of a standard error
+  formula; they apply to essentially any statistic that can be
+  computed on a data vector.
+- The bootstrap directly approximates the full sampling *distribution*
+  of a statistic, not merely its standard error, enabling confidence
+  intervals that adapt to skewness (the percentile method).
+- The jackknife requires only $n$ deterministic recomputations, with
+  no random number generation needed, and its bias-correction
+  identity is exact for several classical statistics.
+
+# Limitations
+
+- The bootstrap's accuracy depends on how well the empirical
+  distribution $\hat F$ approximates the true population $F$, which
+  can be poor for small $n$ or for statistics sensitive to the tails
+  of the distribution.
+- The jackknife is inconsistent for non-smooth statistics, most
+  notably the sample median, and should not be used for standard
+  error estimation in that setting.
+- Both methods can be computationally expensive when the statistic
+  itself is costly to compute (for example, refitting a complex model
+  for each of thousands of bootstrap resamples).
+- Neither method rescues a fundamentally biased sampling design;
+  resampling reflects the properties of the *observed* sample, and
+  cannot correct for problems such as non-random sampling from the
+  population of interest.
+
+# Practical Tips
+
+- **Use at least $B=1000$-$2000$ replications for standard error
+  estimation, and more for confidence intervals.** As Theorem 1.1 and
+  the simulation in Section 10.1 show, the bootstrap standard error
+  estimate itself has Monte Carlo error that shrinks only as
+  $B\to\infty$; percentile intervals depend on tail quantiles and
+  typically need larger $B$ for the same stability.
+- **Always set a random seed for bootstrap reproducibility**, since
+  each run otherwise produces a slightly different result.
+- **Do not apply the plain jackknife to the sample median or other
+  non-smooth statistics.** Use the bootstrap instead, or a smoothed
+  jackknife variant if the jackknife's computational economy is
+  essential.
+- **Check whether the bootstrap distribution is markedly skewed
+  before relying on the normal-approximation interval.** The
+  percentile interval (or a more refined method such as BCa) is
+  generally more trustworthy when skewness is present.
+- **Vectorize where possible.** As implemented above, resampling and
+  recomputing a simple statistic like the mean is fast even at large
+  $B$; for computationally expensive statistics, consider reducing $B$
+  or parallelizing the replicate loop.
+
+# Summary
+
+- The bootstrap approximates the sampling distribution of a statistic
+  by resampling with replacement from the observed data, treating the
+  empirical distribution as a stand-in for the unknown population.
+- Bootstrap estimates of bias and standard error are computed directly
+  from the spread of bootstrap replicates (Theorem 1.1 establishes
+  their Monte Carlo consistency as $B\to\infty$).
+- Bootstrap confidence intervals can be constructed via the normal
+  approximation or, more robustly to skewness, via the percentile
+  method.
+- The jackknife estimates bias and standard error using $n$
+  systematic leave-one-out recomputations; Theorem 1.2 shows it
+  removes the leading $O(1/n)$ bias term for smooth statistics, and
+  this correction is exact (not merely asymptotic) for the plug-in
+  variance estimator, as Example 2 demonstrates.
+- The jackknife's simplicity comes at the cost of inconsistency for
+  non-smooth statistics such as the median, where the bootstrap
+  remains the appropriate tool.
+
+# Key Formulae
+
+- Bootstrap SE: $\widehat{\text{se}}_{\text{boot}} =
+  \text{sd}(\hat\theta^{*}_1,\dots,\hat\theta^{*}_B)$.
+- Bootstrap bias: $\widehat{\text{bias}}_{\text{boot}} = \bar\theta^{*}
+  - \hat\theta$.
+- Bootstrap percentile CI: empirical $(\alpha/2, 1-\alpha/2)$
+  quantiles of $\hat\theta^{*}_1,\dots,\hat\theta^{*}_B$.
+- Jackknife bias: $\widehat{\text{bias}}_{\text{jack}} =
+  (n-1)(\bar\theta_{(\cdot)}-\hat\theta)$.
+- Jackknife SE: $\widehat{\text{se}}_{\text{jack}} =
+  \sqrt{\frac{n-1}{n}\sum_i (\hat\theta_{(i)}-\bar\theta_{(\cdot)})^2}$.
+- Jackknife bias-corrected estimator: $\hat\theta_{\text{jack}} =
+  n\hat\theta - (n-1)\bar\theta_{(\cdot)}$.
+
+# Key Terms
+
+- **Bootstrap principle.** Approximating the sampling distribution of
+  a statistic by resampling from the empirical distribution.
+- **Bootstrap replicate.** The value of a statistic computed on one
+  bootstrap resample.
+- **Empirical distribution.** The distribution placing probability
+  $1/n$ on each observed data point.
+- **Jackknife.** A resampling technique based on systematically
+  leaving out one observation at a time.
+- **Leave-one-out statistic.** The value of a statistic recomputed
+  with a single observation removed.
+- **Percentile interval.** A bootstrap confidence interval formed from
+  the empirical quantiles of the bootstrap replicates.
+- **Resampling.** Generating new samples from an observed dataset,
+  either with replacement (bootstrap) or by systematic deletion
+  (jackknife), to approximate sampling variability.
+
+# Exercises
+
+## Multiple Choice Questions
+
+1. A bootstrap sample is drawn
+   (a) without replacement, of size $n-1$
+   (b) with replacement, of size $n$
+   (c) without replacement, of size $n$
+   (d) with replacement, of size $2n$
+
+2. The bootstrap estimate of bias is
+   (a) $\hat\theta - \bar\theta^{*}$
+   (b) $\bar\theta^{*} - \hat\theta$
+   (c) $\text{sd}(\hat\theta^{*})$
+   (d) $\hat\theta^2$
+
+3. As $B\to\infty$, the bootstrap standard error estimate converges to
+   (a) the true population standard error
+   (b) zero
+   (c) the "ideal bootstrap" standard error under resampling from
+       $\hat F$
+   (d) infinity
+
+4. The jackknife leave-one-out statistic $\hat\theta_{(i)}$ is computed
+   (a) on a bootstrap resample of size $n$
+   (b) on the original sample with observation $i$ removed
+   (c) on a random subsample of size $n/2$
+   (d) on the full sample with observation $i$ duplicated
+
+5. For the sample mean, the jackknife standard error
+   (a) is inconsistent
+   (b) reduces exactly to $s/\sqrt n$
+   (c) is always larger than $s/\sqrt n$
+   (d) cannot be computed
+
+6. The jackknife bias correction, under the expansion (1.6), reduces
+   the order of the bias from
+   (a) $O(1/n)$ to $O(1)$
+   (b) $O(1/n^2)$ to $O(1/n)$
+   (c) $O(1/n)$ to $O(1/n^2)$
+   (d) $O(1)$ to $O(1/n)$
+
+7. The jackknife is known to be inconsistent for
+   (a) the sample mean
+   (b) the sample variance
+   (c) the sample median
+   (d) the sample sum
+
+8. The bootstrap percentile confidence interval is constructed from
+   (a) the mean and standard deviation of the bootstrap replicates
+       assuming normality
+   (b) the empirical quantiles of the bootstrap replicates
+   (c) the leave-one-out replicates only
+   (d) the original sample alone
+
+9. For the plug-in (divide-by-$n$) variance estimator under Normal
+   sampling, the exact bias is
+   (a) $0$
+   (b) $\sigma^2/n$
+   (c) $-\sigma^2/n$
+   (d) $-\sigma^2/(n-1)$
+
+10. Compared to the jackknife, the bootstrap generally requires
+    (a) fewer recomputations of the statistic
+    (b) exactly $n$ recomputations
+    (c) more recomputations of the statistic, but random resampling
+        rather than systematic deletion
+    (d) no recomputation at all
+
+**Answers.** 1(b), 2(b), 3(c), 4(b), 5(b), 6(c), 7(c), 8(b), 9(c),
+10(c).
+
+## Short Answer Questions
+
+1. State the bootstrap principle in your own words.
+2. Define the empirical distribution $\hat F$ and explain its role in
+   the bootstrap.
+3. Write down the formulas for the bootstrap estimates of bias and
+   standard error.
+4. Write down the formulas for the jackknife estimates of bias and
+   standard error.
+5. Explain why the jackknife standard error formula includes the
+   factor $(n-1)/n$ rather than simply $1/n$.
+6. Explain, using Theorem 1.1, what aspect of bootstrap accuracy is
+   controlled by increasing $B$, and what aspect is not.
+7. Why is the percentile confidence interval generally preferred over
+   the normal-approximation interval when the bootstrap distribution
+   is skewed?
+8. Explain why the jackknife is inconsistent for the sample median.
+9. State the jackknife bias-correction identity and explain what
+   "removing the leading bias term" means.
+10. Give one practical application, distinct from those emphasized in
+    this unit, where bootstrap resampling would be useful.
+
+## Long Answer Questions
+
+1. State and prove Theorem 1.1 (consistency of the bootstrap standard
+   error estimate as $B\to\infty$), and explain what source of error
+   this theorem does and does not address.
+2. State and prove Theorem 1.2 (jackknife bias reduction), explaining
+   the role of the assumed bias expansion (1.6).
+3. Derive the identity showing that the jackknife standard error
+   reduces exactly to $s/\sqrt n$ for the sample mean, as in Section
+   8.1.
+4. Using the dataset of Example 2, explain why the jackknife bias
+   correction of the plug-in variance estimator is exact rather than
+   merely asymptotic, and relate this to the general theory of
+   Theorem 1.2.
+5. Compare the bootstrap and the jackknife in terms of computational
+   cost, applicability to non-smooth statistics, and the type of
+   inferential statement (standard error only, versus full sampling
+   distribution) each supports.
+6. Discuss the normal-approximation and percentile bootstrap
+   confidence intervals, explaining under what circumstances they
+   would give noticeably different results.
+7. Explain the connection between the bootstrap and the general Monte
+   Carlo simulation framework developed in Unit 3, identifying which
+   specific generation method (from Units 3.1-3.6) underlies drawing a
+   bootstrap resample.
+8. Discuss the role of resampling methods in modern machine learning,
+   with specific reference to bagging and bootstrap-based confidence
+   intervals for model performance metrics.
+9. Explain why neither the bootstrap nor the jackknife can correct for
+   a biased sampling design, using a concrete hypothetical example.
+10. Discuss the historical development of the jackknife (Quenouille,
+    Tukey) and the bootstrap (Efron), and explain the conceptual
+    relationship between the two methods.
+
+## Programming Exercises
+
+1. Implement `bootstrap_estimate()` from first principles (already
+   provided) and reproduce, by simulation, the standard error
+   comparison of Example 1 for the dataset given there.
+2. Implement `jackknife_estimate()` from first principles (already
+   provided) and reproduce the manual calculations of Examples 1 and 2
+   exactly.
+3. Apply the bootstrap to estimate the standard error of the sample
+   correlation coefficient for a bivariate dataset of your choosing
+   (for example, simulated from a bivariate Normal distribution with a
+   known correlation), and compare the bootstrap standard error to the
+   asymptotic formula $\text{se}(\hat\rho) \approx (1-\rho^2)/\sqrt{n}$.
+4. Demonstrate empirically that the jackknife standard error is
+   inconsistent for the sample median: for increasing sample sizes
+   drawn from a known continuous distribution, compare the jackknife
+   standard error of the median to a bootstrap estimate, and discuss
+   the discrepancy.
+5. Construct and compare the normal-approximation and percentile 95%
+   bootstrap confidence intervals for the coefficient of variation
+   ($s/\bar x$) of a right-skewed simulated dataset (e.g. drawn from a
+   Gamma or Log-normal distribution), and discuss which interval
+   appears more trustworthy.
+6. Write a simulation study estimating the empirical coverage of the
+   normal-approximation bootstrap interval, analogous to Section 10.3,
+   and compare its coverage to that of the percentile interval under
+   the same conditions.
+7. Implement the jackknife bias correction for the plug-in variance
+   estimator for a range of sample sizes $n \in \{5, 10, 20, 50\}$, and
+   verify, by simulation, that the corrected estimator's average bias
+   is negligible in every case (since the correction is exact for this
+   statistic).
+8. Apply bootstrap resampling to estimate the standard error of a
+   fitted simple linear regression slope coefficient, using
+   case resampling (resampling entire $(x_i,y_i)$ pairs), and compare
+   to the classical formula-based standard error from `lm()`.
+9. Benchmark, using `system.time()`, the bootstrap (with $B=2000$)
+   against the jackknife for a sample of size $n=200$ and a moderately
+   expensive statistic (for example, a trimmed mean), and discuss the
+   relative computational cost.
+10. Implement a simple Bayesian bootstrap (Rubin, 1981): instead of
+    resampling with replacement, assign each observation a random
+    Dirichlet$(1,\dots,1)$ weight and compute a weighted statistic;
+    compare the resulting distribution of replicates to the ordinary
+    bootstrap distribution for the sample mean.
+
+## Mini Projects
+
+1. **A resampling toolkit with diagnostics.** Build a small R toolkit
+   that, given a dataset and a statistic function, automatically
+   computes the bootstrap bias, bootstrap standard error, jackknife
+   bias, jackknife standard error, and both types of bootstrap
+   confidence interval, and produces a diagnostic report flagging (i)
+   substantial disagreement between the bootstrap and jackknife
+   standard errors, and (ii) substantial skewness in the bootstrap
+   distribution (for example, via a simple skewness statistic).
+   Demonstrate the toolkit on at least three different statistics
+   (mean, variance, and one statistic of your choosing that is
+   plausibly non-smooth, such as the median), and discuss what the
+   diagnostics reveal in each case.
+
+2. **Bootstrap versus jackknife under model misspecification.** Design
+   a simulation study in which data are generated from a
+   heavy-tailed distribution (for example, a $t_3$ distribution), and
+   compare the bootstrap and jackknife standard error estimates for
+   the sample mean and the 10% trimmed mean across repeated simulated
+   datasets, evaluating each against the true (simulation-based)
+   sampling standard error. Discuss which method degrades more
+   gracefully as the tail heaviness increases, and relate your
+   findings to the smoothness assumptions underlying Theorem 1.2.
+
+**Difficulty labels.** Multiple choice, short answer: **Easy**. Long
+answer questions 3, 4, 6, 7, 9, programming exercises 1-6: **Medium**.
+Long answer questions 1, 2, 5, 8, 10, programming exercises 7-10:
+**Medium to Advanced**. Mini projects: **Advanced**.
+
+# References
+
+Bickel, P. J., & Freedman, D. A. (1981). Some asymptotic theory for
+the bootstrap. *The Annals of Statistics*, 9(6), 1196-1217.
+
+Efron, B. (1979). Bootstrap methods: Another look at the jackknife.
+*The Annals of Statistics*, 7(1), 1-26.
+
+Efron, B. (1982). *The jackknife, the bootstrap and other resampling
+plans*. SIAM.
+
+Efron, B. (1987). Better bootstrap confidence intervals. *Journal of
+the American Statistical Association*, 82(397), 171-185.
+
+Quenouille, M. H. (1956). Notes on bias in estimation. *Biometrika*,
+43(3/4), 353-360.
+
+Rizzo, M. L. (2019). *Statistical computing with R* (2nd ed.). CRC
+Press.
+
+Rubin, D. B. (1981). The Bayesian bootstrap. *The Annals of
+Statistics*, 9(1), 130-134.
+
+Tukey, J. W. (1958). Bias and confidence in not-quite large samples
+(abstract). *The Annals of Mathematical Statistics*, 29(2), 614.

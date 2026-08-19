@@ -1,0 +1,1320 @@
+---
+title: "Unit 3.4: The Acceptance-Rejection Method"
+author: "Dr. Manoj C. Patil"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: '3'
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: hide
+    theme: cosmo
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    warning = FALSE,
+    message = FALSE,
+    fig.align = "center",
+    fig.width = 7,
+    fig.height = 4.5
+)
+
+set.seed(123)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(gridExtra)
+library(patchwork)
+```
+
+# Learning Objectives
+
+By the end of this unit, a student should be able to
+
+- explain why the inverse transformation method of Unit 3.3 is
+  insufficient whenever a quantile function is unavailable, and how
+  the acceptance-rejection method fills this gap,
+- state and prove that the acceptance-rejection algorithm produces a
+  variate with exactly the target density, using the conditional
+  distribution of the accepted candidate,
+- derive the bounding constant $M$ that governs the algorithm and
+  explain why the tightest valid $M$ minimizes computational cost,
+- define exponential tilting and use it to construct an efficient
+  envelope for simulating extreme-tail events,
+- implement the acceptance-rejection algorithm in R for both a
+  bounded and an unbounded target density, and empirically verify the
+  theoretical acceptance probability,
+- evaluate when the method is advantageous relative to alternative
+  generation techniques, and diagnose common implementation errors.
+
+# Prerequisites
+
+A reader should already be comfortable with
+
+- the inverse transformation method and the notion of a quantile
+  function (Unit 3.3),
+- basic probability density manipulations, including conditioning on
+  an event and computing conditional densities,
+- elementary calculus, in particular locating the maximum of a smooth
+  function by differentiation,
+- the moment generating function of a random variable,
+- generating Uniform$(0,1)$ and Exponential random variables in R.
+
+# Introduction
+
+The inverse transformation method reduces the problem of simulating
+any random variable to a single recipe: draw a uniform variate and
+apply the quantile function. The recipe is elegant, but it has a
+practical weak point. Many distributions that arise routinely in
+statistics — the Gamma distribution for non-integer shape parameter,
+the standard Normal distribution, most posterior distributions
+encountered in Bayesian inference — do not admit a quantile function
+in closed form, and numerical inversion of the cumulative distribution
+function at every draw can be slow or numerically delicate. The
+acceptance-rejection method, sometimes called rejection sampling,
+addresses exactly this situation. It requires no quantile function at
+all; it requires only the ability to evaluate the target density
+(possibly up to an unknown multiplicative constant) and the ability to
+simulate from some other, more convenient distribution.
+
+The idea originates with John von Neumann, who described it in an
+unpublished 1947 note in connection with Monte Carlo calculations for
+the Manhattan Project, and it was popularized in the open literature
+through the 1950s and 1960s as electronic computing made large-scale
+simulation practical. The method's genius lies in converting a
+sampling problem into a geometric one: if a target density can be
+enclosed beneath a scaled version of a density that is easy to sample,
+then sampling uniformly from the region beneath the easy density and
+discarding points that fall above the target curve leaves behind
+points that are exactly distributed according to the target. No
+inversion, and no closed-form cumulative distribution function, is
+required anywhere in the procedure.
+
+The practical importance of the method extends well beyond
+distributions lacking a quantile function. In Bayesian statistics, a
+posterior density is typically known only up to an unknown
+normalizing constant — the method, remarkably, still works without
+ever needing that constant, which makes it a natural exact-sampling
+benchmark against which approximate Markov chain Monte Carlo methods
+are compared. In reliability and insurance mathematics, a refinement
+of the method known as exponential tilting makes it possible to
+simulate efficiently from the extreme tail of a distribution, a
+setting in which naive methods waste nearly all of their computational
+effort. This unit develops the theory, the choice of the bounding
+constant $M$, exponential tilting, and the algorithms in full.
+
+# Intuition
+
+Picture the graph of a target probability density $f$, and suppose it
+is possible to draw, at will, a random point that lands uniformly
+somewhere on or under the graph of some *other* curve $Mg(x)$, where
+$g$ is itself a probability density that is easy to sample from and
+$M \ge 1$ is a constant large enough that $Mg(x)$ lies everywhere on
+or above $f(x)$. If a large number of such uniformly scattered points
+are generated under the curve $Mg$, then the subset of those points
+that happen to fall *under* the curve $f$ is, geometrically, uniformly
+scattered under $f$ — and a point uniformly scattered under a density
+curve has, as its horizontal coordinate, exactly a draw from that
+density. Points falling above $f$ but still under $Mg$ are simply
+discarded ("rejected"); the surviving ("accepted") points supply an
+exact sample from $f$.
+
+Turning this geometric picture into an algorithm requires only a way
+to generate a point uniformly under $Mg$. This is done in two stages:
+first draw the horizontal coordinate $Y$ from the density $g$ (which
+is assumed to be easy), and then, conditional on $Y=y$, draw the
+vertical coordinate uniformly between $0$ and $Mg(y)$. The point is
+accepted if this vertical coordinate falls at or below $f(y)$. Because
+comparing a Uniform$(0,1)$ draw $U$ against the ratio $f(y)/(Mg(y))$
+is equivalent to comparing a uniform draw on $(0, Mg(y))$ against
+$f(y)$, the acceptance rule reduces to the single check
+$U \le f(y)/(Mg(y))$, with no reference to areas or integrals needed
+at run time.
+
+```{r intuition-figure, echo=FALSE, fig.cap="Geometric idea of acceptance-rejection: candidate points are generated uniformly under the envelope Mg(x); the shaded points falling under f(x) are accepted, and the outline points are rejected."}
+x_grid <- seq(0, 1, length.out = 300)
+target_density <- 6 * x_grid * (1 - x_grid)
+envelope_height <- 1.5
+
+set.seed(123)
+n_demo_points <- 400
+y_candidates <- runif(n_demo_points)
+v_candidates <- runif(n_demo_points, min = 0, max = envelope_height)
+f_at_y <- 6 * y_candidates * (1 - y_candidates)
+accepted <- v_candidates <= f_at_y
+
+demo_df <- tibble(y = y_candidates, v = v_candidates, accepted = accepted)
+
+ggplot() +
+  geom_line(
+    data = tibble(x = x_grid, f = target_density),
+    aes(x = x, y = f), colour = "steelblue", linewidth = 1
+  ) +
+  geom_hline(yintercept = envelope_height, colour = "darkorange", linewidth = 1) +
+  geom_point(
+    data = demo_df, aes(x = y, y = v, colour = accepted), size = 1.2, alpha = 0.7
+  ) +
+  scale_colour_manual(values = c("FALSE" = "grey70", "TRUE" = "firebrick")) +
+  labs(
+    title = "Points uniform under Mg(x) = 1.5; accepted points lie under f(x)",
+    x = "y", y = "height", colour = "Accepted"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+The picture also makes the efficiency of the method transparent: the
+fraction of candidate points that are accepted is exactly the ratio of
+the area under $f$ (which is $1$, since $f$ is a density) to the area
+under $Mg$ (which is $M$, since $g$ is a density). An envelope that
+hugs the target closely, with $M$ close to its minimum possible value,
+wastes little effort on rejected points; a loose envelope with large
+$M$ wastes most of its draws.
+
+# Formal Definitions
+
+## The Acceptance-Rejection Setup
+
+**Definition.** Let $f$ be a target probability density on a support
+$\mathcal{X}$, and let $g$ be a **proposal density** (also called an
+**envelope density** or **instrumental density**) on the same support,
+from which random variates can be readily generated. Suppose there
+exists a finite constant $M \ge 1$, called the **bounding constant**,
+such that
+
+$$
+f(x) \le M\,g(x) \qquad \text{for every } x \in \mathcal{X}.
+\tag{4.1}
+$$
+
+The **acceptance-rejection method** generates a candidate
+$Y \sim g$ together with an independent $U \sim \text{Uniform}(0,1)$,
+and accepts $X = Y$ if
+
+$$
+U \le \frac{f(Y)}{M\,g(Y)},
+\tag{4.2}
+$$
+
+repeating with a fresh $(Y,U)$ pair whenever the candidate is
+rejected.
+
+where
+
+- $f$ denotes the density from which a sample is ultimately desired,
+- $g$ denotes the density actually used to generate candidates,
+- $M$ denotes the constant bounding the ratio $f/g$ over the entire
+  support, so that the right-hand side of (4.2) never exceeds $1$,
+- $U$ denotes the auxiliary uniform variate used to decide acceptance.
+
+## Conditional Distribution of the Accepted Variate
+
+The central claim of the method, proved formally as Theorem 4.1 below,
+is that the variate reported by the algorithm — the value of $Y$ on
+the trial that is finally accepted — has *exactly* the conditional
+distribution
+
+$$
+X \;\overset{d}{=}\; \bigl(Y \mid U \le f(Y)/(Mg(Y))\bigr),
+\tag{4.3}
+$$
+
+and that this conditional distribution coincides exactly with the
+target density $f$, not merely approximately. This is the feature that
+elevates the method from a heuristic to an exact simulation technique:
+however loose or tight the envelope $Mg$ is chosen (subject to $(4.1)$
+holding), the output is never biased; only the *speed* of generation
+depends on the tightness of the envelope.
+
+# Theorems
+
+## Theorem 4.1: Correctness of the Acceptance-Rejection Algorithm
+
+**Statement.** Let $f$ and $g$ be densities on a common support
+$\mathcal{X}$, and let $M \ge 1$ satisfy $f(x) \le Mg(x)$ for all $x
+\in \mathcal{X}$. If $Y \sim g$ and $U \sim \text{Uniform}(0,1)$
+independently, and $X$ denotes the value of $Y$ conditional on the
+event $\{U \le f(Y)/(Mg(Y))\}$, then $X$ has density exactly $f$.
+Moreover, the probability that any given trial is accepted equals
+$1/M$.
+
+**Assumptions.** $g(x) > 0$ wherever $f(x) > 0$ (so that the ratio
+$f(x)/g(x)$ is well defined on the support of $f$), and $M$ is finite.
+
+**Proof.** For a fixed candidate $Y=y$, the conditional acceptance
+probability is
+
+$$
+P\bigl(U \le f(y)/(Mg(y)) \mid Y=y\bigr) = \frac{f(y)}{Mg(y)},
+$$
+
+since $U$ is Uniform$(0,1)$ and the right-hand side of (4.2) lies in
+$[0,1]$ by the bounding condition (4.1). Averaging over the
+distribution of $Y$ gives the unconditional acceptance probability
+
+$$
+P(\text{accept}) = \int_{\mathcal{X}} \frac{f(y)}{Mg(y)}\, g(y)\, dy
+= \frac{1}{M}\int_{\mathcal{X}} f(y)\, dy = \frac{1}{M},
+\tag{4.4}
+$$
+
+using $\int f = 1$ since $f$ is a density. This proves the second
+claim. For the first claim, fix $x \in \mathcal{X}$ and compute the
+joint probability that $Y \le x$ *and* the candidate is accepted:
+
+$$
+P(Y \le x,\ \text{accept})
+= \int_{-\infty}^{x} \frac{f(y)}{Mg(y)}\, g(y)\, dy
+= \frac{1}{M}\int_{-\infty}^{x} f(y)\, dy
+= \frac{F(x)}{M},
+\tag{4.5}
+$$
+
+where $F$ is the cumulative distribution function of $f$. By the
+definition of conditional probability and using (4.4) and (4.5),
+
+$$
+P(X \le x) = P(Y \le x \mid \text{accept})
+= \frac{P(Y\le x,\ \text{accept})}{P(\text{accept})}
+= \frac{F(x)/M}{1/M} = F(x).
+$$
+
+Since $P(X \le x) = F(x)$ for every $x$, the accepted variate $X$ has
+cumulative distribution function $F$, and hence density $f$.
+$\blacksquare$
+
+**Remarks.** An equivalent, purely geometric argument reaches the same
+conclusion without any integration. The pair $(Y, U\!\cdot\! Mg(Y))$ is
+uniformly distributed over the two-dimensional region lying under the
+curve $Mg$, because $Y$ has marginal density $g$ and, given $Y=y$, the
+second coordinate is uniform on $(0, Mg(y))$ by construction; a
+standard fact about the uniform distribution on a planar region under
+a curve is that its horizontal marginal is proportional to the height
+of the curve. Restricting attention to the sub-region lying under $f$
+(the accepted points) therefore gives a distribution uniform under
+$f$, whose horizontal marginal is $f$ itself, exactly reproducing the
+figure in the Intuition section. Both arguments are standard; see
+Devroye (1986, Ch. II) and Robert & Casella (2004, Ch. 2).
+
+**Examples.** Full worked numerical examples appear later in this
+unit for both a bounded target (Beta) and an unbounded target
+(half-Normal).
+
+**Applications.** Because the proof of (4.5) only ever uses $f$
+through the integral $\int f$, the same argument goes through
+unchanged if $f$ is replaced everywhere by an *unnormalized* density
+$\tilde f = c f$ for an unknown constant $c > 0$, provided $M$ is
+re-chosen to satisfy $\tilde f \le M g$. The accepted variate is still
+exactly distributed as $f$, without $c$ ever being computed. This
+property is the reason acceptance-rejection is so widely used in
+Bayesian computation, where a posterior density is typically available
+only up to its normalizing constant.
+
+## Theorem 4.2: Number of Trials Until Acceptance
+
+**Statement.** Under the conditions of Theorem 4.1, the number of
+independent trials $N$ required until the first acceptance (inclusive
+of the accepted trial) follows a Geometric distribution with success
+probability $1/M$,
+
+$$
+P(N = k) = \Bigl(1-\frac1M\Bigr)^{k-1}\frac1M, \qquad k=1,2,\dots,
+$$
+
+and hence $E(N) = M$.
+
+**Proof.** Successive trials are independent and identically
+distributed, each with acceptance probability $1/M$ by (4.4). The
+number of independent Bernoulli$(1/M)$ trials up to and including the
+first success is, by definition, Geometric$(1/M)$, with mean $1/(1/M)
+= M$. $\blacksquare$
+
+**Remarks.** Theorem 4.2 is the formal justification for treating $M$
+as the "cost" of the algorithm: on average, $M$ candidate draws from
+$g$ are needed to produce a single accepted draw from $f$. This is
+precisely why the Choice of $M$ (Section 8) is not a minor technical
+detail but the central design decision of the method.
+
+# Mathematical Derivations
+
+## The Optimal (Minimal) Bounding Constant
+
+Since $E(N) = M$ by Theorem 4.2, computational efficiency is directly
+governed by how small $M$ can be made while still satisfying $f(x)
+\le Mg(x)$ for every $x$. Rearranging (4.1),
+
+$$
+M \ge \sup_{x \,:\, g(x) > 0} \frac{f(x)}{g(x)},
+$$
+
+so the smallest valid choice is
+
+$$
+M^{*} = \sup_{x} \frac{f(x)}{g(x)},
+\tag{4.6}
+$$
+
+provided this supremum is finite. Using $M = M^{*}$ maximizes the
+acceptance probability $1/M$ for the given proposal $g$; a poorer
+choice of $g$, even paired with its own optimal $M^{*}$, can still
+give a much larger $M^{*}$ than a better-matched proposal would. Two
+practical consequences follow immediately. First, $g$ should have the
+same support as $f$ (or larger), since $f(x) \le Mg(x)$ is impossible
+to satisfy wherever $g(x) = 0$ but $f(x) > 0$. Second, $g$ should have
+tails at least as heavy as those of $f$; if $g$'s tail decays faster
+than $f$'s tail, the ratio $f(x)/g(x)$ diverges and no finite $M$
+exists at all, so the method cannot be used in that pairing — a
+concrete instance is attempting to generate Cauchy variates using a
+Normal proposal, which fails because the Cauchy density decays only
+polynomially while the Normal density decays like $e^{-x^2/2}$.
+
+## Exponential Tilting
+
+For distributions whose interesting behaviour lies deep in a tail —
+extreme value analysis, ruin probabilities in insurance mathematics,
+rare-event simulation in reliability engineering — the natural
+proposal $g$ equal to the parent distribution itself gives a
+disastrously small acceptance probability, because almost all mass of
+$g$ lies away from the tail of interest. **Exponential tilting**
+(also called exponential twisting, or the Esscher transform in
+actuarial science) constructs a family of proposal densities better
+matched to a target region by re-weighting a base density with an
+exponential factor.
+
+**Definition.** Given a density $h$ with moment generating function
+$M_h(\theta) = E_h[e^{\theta X}] < \infty$ on some interval of
+$\theta$, the **exponentially tilted density** with tilting parameter
+$\theta$ is
+
+$$
+h_\theta(x) = \frac{e^{\theta x}\, h(x)}{M_h(\theta)}.
+\tag{4.7}
+$$
+
+Increasing $\theta$ shifts probability mass of $h_\theta$ toward
+larger values of $x$, which makes $h_\theta$ an effective proposal for
+sampling from the right tail of a related target density; the tilting
+parameter $\theta$ is a free design choice, and its optimal value is
+the one minimizing the resulting bounding constant $M^{*}$ in (4.6).
+
+**Worked construction: sampling the right tail of the standard
+Normal.** Let $Z$ be a target variable with the standard Normal
+density $\varphi(z) = (2\pi)^{-1/2} e^{-z^2/2}$, and suppose the goal
+is to simulate from $Z$ conditional on $Z > a$ for a large threshold
+$a > 0$, i.e. from the truncated density
+
+$$
+f(x) = \frac{\varphi(x)}{Q(a)}, \qquad x > a,
+\qquad Q(a) = P(Z>a) = 1-\Phi(a).
+$$
+
+Sampling $Z$ unconditionally and discarding all draws with $Z \le a$
+works in principle but has acceptance probability $Q(a)$, which
+becomes vanishingly small as $a$ grows — for $a=4$, roughly one draw
+in $30{,}000$ is retained. Exponential tilting of the shifted
+Exponential family provides a dramatically better proposal. Take as
+the base density the Exponential$(1)$ density shifted to start at $a$,
+and tilt with parameter $\theta = a$, giving the proposal
+
+$$
+g(x) = a\,e^{-a(x-a)}, \qquad x > a,
+$$
+
+i.e. $Y = a + E$ with $E \sim \text{Exponential}(\text{rate}=a)$.
+Substituting into the ratio $f(x)/g(x)$ and completing the square,
+
+$$
+\begin{aligned}
+\frac{f(x)}{g(x)}
+&= \frac{1}{Q(a)\,a\sqrt{2\pi}}\, \exp\Bigl(-\tfrac{x^2}{2} + ax\Bigr) \\
+&= \frac{1}{Q(a)\,a\sqrt{2\pi}}\, \exp\Bigl(-\tfrac{(x-a)^2}{2} - \tfrac{a^2}{2}\Bigr) ,
+\end{aligned}
+\tag{4.8}
+$$
+
+using $-\tfrac{x^2}{2}+ax = -\tfrac{(x-a)^2}{2} - \tfrac{a^2}{2}$,
+which is verified by expanding $(x-a)^2 = x^2 - 2ax + a^2$. Since
+$x>a$, the factor $\exp(-(x-a)^2/2)$ is at most $1$, attained only in
+the limit $x \to a^{+}$, so the supremum of (4.8) is
+
+$$
+M^{*} = \frac{e^{-a^2/2}}{Q(a)\,a\sqrt{2\pi}} = \frac{\varphi(a)}{a\,Q(a)}.
+\tag{4.9}
+$$
+
+Dividing (4.8) by (4.9) shows that the acceptance ratio has the
+remarkably simple form
+
+$$
+\frac{f(x)}{M^{*}g(x)} = e^{-(x-a)^2/2},
+\tag{4.10}
+$$
+
+which depends only on the *excess* $x-a$ of the candidate above the
+threshold, and involves no evaluation of $\Phi$ or $Q$ at run time.
+Because $-\log U \sim \text{Exponential}(1)$ whenever $U \sim
+\text{Uniform}(0,1)$, the acceptance rule $U \le e^{-(x-a)^2/2}$ is
+equivalent to $-\log U \ge (x-a)^2/2$, so drawing a second, independent
+Exponential$(1)$ variate $E_2$ and accepting whenever $E_2 \ge
+(Y-a)^2/2$ implements the algorithm with no uniform variate and no
+transcendental function evaluation beyond squaring — the classical
+"two exponentials" algorithm of Marsaglia (1964), reproduced as
+Algorithm 4.3 below.
+
+By the Mills ratio approximation $Q(a) \sim \varphi(a)/a$ as $a \to
+\infty$, expression (4.9) shows $M^{*} \to 1$ as $a \to \infty$: the
+larger the threshold, the *more* efficient the tilted algorithm
+becomes, in sharp contrast to naive rejection from the untilted
+Normal, whose acceptance probability $Q(a) \to 0$. This inversion of
+the usual difficulty — the tail becomes easier, not harder, to sample
+— is the defining benefit of exponential tilting for rare-event
+simulation.
+
+# Algorithms
+
+## Algorithm 4.1: General Acceptance-Rejection Algorithm
+
+**Purpose.** Generate a sample from a target density $f$ using only a
+proposal density $g$ and a valid bounding constant $M$, without
+requiring a closed-form quantile function for $f$.
+
+**Input.** Target density (or unnormalized density) $f$; proposal
+density $g$, from which variates can be simulated; bounding constant
+$M$ satisfying $f(x) \le Mg(x)$ on the support; required sample size
+$n$.
+
+**Output.** A vector $x_1, \dots, x_n$ of simulated observations from
+$f$.
+
+**Step-by-step procedure.**
+
+1. Set the accepted-count to $0$ and initialize an empty output
+   vector.
+2. While fewer than $n$ values have been accepted:
+   (a) draw a candidate $Y \sim g$;
+   (b) draw $U \sim \text{Uniform}(0,1)$, independent of $Y$;
+   (c) if $U \le f(Y)/(Mg(Y))$, append $Y$ to the output and increment
+       the accepted-count; otherwise discard $Y$ and $U$ and repeat.
+3. Return the vector of $n$ accepted values.
+
+**Pseudo-code.**
+
+```
+Algorithm: Acceptance-Rejection
+Input:  f, g, M, n
+Output: vector x of length n
+
+1. accepted <- 0
+2. x <- empty vector
+3. While accepted < n:
+       y <- draw from g
+       u <- draw from Uniform(0,1)
+       If u <= f(y) / (M * g(y)):
+           append y to x
+           accepted <- accepted + 1
+4. Return x
+```
+
+**Flowchart description.** Start; draw a candidate from the proposal;
+draw an independent uniform variate; compare the uniform variate to
+the acceptance ratio; if it does not exceed the ratio, record the
+candidate as an accepted observation, otherwise discard both draws;
+repeat until the required number of observations has been collected;
+end.
+
+**Complexity.** Each iteration costs $O(1)$ (one draw from $g$, one
+uniform draw, one ratio evaluation), and by Theorem 4.2 the expected
+number of iterations per accepted value is $M$, so the expected total
+cost to produce $n$ observations is $O(Mn)$.
+
+**Practical considerations.** All density evaluations should be
+performed on the log scale, comparing $\log U \le \log f(Y) - \log M -
+\log g(Y)$, whenever $f$ or $g$ can take very small values, to avoid
+floating-point underflow.
+
+## Algorithm 4.2: Acceptance-Rejection with a Uniform Envelope (Bounded Target)
+
+**Purpose.** Generate a sample from a bounded density on a bounded
+interval using the simplest possible envelope: a Uniform distribution
+on the same interval, scaled by the maximum height of the target.
+
+**Input.** Target density $f$ on $[0,1]$ with known maximum value
+$f_{\max}$; sample size $n$.
+
+**Output.** A vector of $n$ simulated observations from $f$.
+
+**Step-by-step procedure.**
+
+1. Set $M = f_{\max}$ and $g(x) = 1$ on $[0,1]$.
+2. Apply Algorithm 4.1 with this $g$ and $M$.
+
+**Pseudo-code.**
+
+```
+Algorithm: Acceptance-Rejection, Uniform Envelope
+Input:  f, f_max, n
+Output: vector x of length n
+
+1. M <- f_max
+2. accepted <- 0
+3. x <- empty vector
+4. While accepted < n:
+       y <- Uniform(0,1)
+       u <- Uniform(0,1)
+       If u <= f(y) / M:
+           append y to x
+           accepted <- accepted + 1
+5. Return x
+```
+
+**Flowchart description.** Identical to Algorithm 4.1, specialized so
+that generating the candidate $Y$ is itself a single uniform draw and
+the envelope height is the constant $f_{\max}$.
+
+**Complexity.** $O(M n)$ expected time, with $M = f_{\max}$ for the
+Uniform$(0,1)$ envelope; a worked value of $M$ for a specific target
+(the Beta$(2,2)$ density) is given in the Numerical Examples section.
+
+**Practical considerations.** This envelope is only viable when the
+target is bounded and has bounded support; it becomes inefficient when
+$f$ is sharply peaked, since $f_{\max}$ (and hence $M$) grows large
+relative to the typical height of $f$ away from its mode.
+
+## Algorithm 4.3: Exponentially Tilted Envelope for Normal Tail Simulation
+
+**Purpose.** Efficiently generate observations from the standard
+Normal distribution conditioned on exceeding a threshold $a$, using
+the tilted Exponential envelope derived in Section 7.2, via the
+"two exponentials" implementation that avoids evaluating $\varphi$,
+$\Phi$, or any exponential function beyond the two auxiliary draws.
+
+**Input.** Threshold $a > 0$; sample size $n$.
+
+**Output.** A vector of $n$ simulated observations from the standard
+Normal distribution truncated to $(a, \infty)$.
+
+**Step-by-step procedure.**
+
+1. While fewer than $n$ values have been accepted:
+   (a) draw $E_1 \sim \text{Exponential}(\text{rate}=a)$ and set
+       candidate $Y = a + E_1$;
+   (b) draw $E_2 \sim \text{Exponential}(\text{rate}=1)$,
+       independently;
+   (c) if $E_2 \ge E_1^2/2$, accept $Y$; otherwise discard both draws.
+2. Return the vector of accepted values.
+
+**Pseudo-code.**
+
+```
+Algorithm: Tilted-Exponential Normal Tail Sampler
+Input:  a, n
+Output: vector x of length n
+
+1. accepted <- 0
+2. x <- empty vector
+3. While accepted < n:
+       e1 <- Exponential(rate = a)
+       e2 <- Exponential(rate = 1)
+       If e2 >= e1^2 / 2:
+           append (a + e1) to x
+           accepted <- accepted + 1
+4. Return x
+```
+
+**Flowchart description.** Start; draw two independent exponential
+variates; compare the second against half the square of the first;
+if the check passes, report the threshold plus the first exponential
+as an accepted tail observation; otherwise discard both and repeat;
+end.
+
+**Complexity.** $O(M^{*} n)$ expected time, with $M^{*}$ given
+explicitly by (4.9); crucially, $M^{*} \to 1$ as $a \to \infty$, so
+unlike Algorithms 4.1-4.2, this method becomes *more* efficient as the
+target region becomes more extreme.
+
+**Practical considerations.** For $a \le 0$, the shifted-Exponential
+envelope is not the natural choice (a direct Normal draw, discarding
+values below the threshold, is simpler and already efficient when the
+threshold is not deep in the tail); the tilted method is intended
+specifically for moderate-to-large positive thresholds.
+
+# R Programming
+
+```{r ar-general-function}
+set.seed(123)
+
+#' Generate variates by the general acceptance-rejection algorithm
+#'
+#' Purpose: implements Algorithm 4.1, drawing candidates from a
+#' user-supplied proposal generator and accepting them according to
+#' the ratio of the target density to the scaled proposal density.
+#'
+#' Arguments:
+#'   sample_size        number of accepted observations required
+#'   target_density     function f(x) evaluating the target density
+#'   proposal_density    function g(x) evaluating the proposal density
+#'   proposal_sampler    function() returning one draw from g
+#'   bounding_constant   the constant M with f(x) <= M * g(x)
+#'
+#' Returns:
+#'   a list with the accepted sample (`sample`) and the empirical
+#'   acceptance rate (`acceptance_rate`)
+#'
+#' Example:
+#'   accept_reject(
+#'     sample_size = 1000,
+#'     target_density = function(x) 6 * x * (1 - x),
+#'     proposal_density = function(x) rep(1, length(x)),
+#'     proposal_sampler = function() runif(1),
+#'     bounding_constant = 1.5
+#'   )
+accept_reject <- function(sample_size, target_density, proposal_density,
+                           proposal_sampler, bounding_constant) {
+  accepted_values <- numeric(sample_size)
+  accepted_count <- 0
+  total_trials <- 0
+
+  while (accepted_count < sample_size) {
+    candidate <- proposal_sampler()
+    uniform_draw <- runif(1)
+    total_trials <- total_trials + 1
+
+    acceptance_ratio <- target_density(candidate) /
+      (bounding_constant * proposal_density(candidate))
+
+    if (uniform_draw <= acceptance_ratio) {
+      accepted_count <- accepted_count + 1
+      accepted_values[accepted_count] <- candidate
+    }
+  }
+
+  list(
+    sample = accepted_values,
+    acceptance_rate = sample_size / total_trials
+  )
+}
+
+#' Generate right-tail standard Normal variates via exponential tilting
+#'
+#' Purpose: implements Algorithm 4.3, the two-exponentials method for
+#' simulating Z | Z > a efficiently for large thresholds a.
+#'
+#' Arguments:
+#'   sample_size    number of accepted observations required
+#'   threshold      the truncation threshold a (a > 0)
+#'
+#' Returns:
+#'   a list with the accepted sample (`sample`) and the empirical
+#'   acceptance rate (`acceptance_rate`)
+#'
+#' Example:
+#'   tilted_normal_tail(sample_size = 1000, threshold = 2)
+tilted_normal_tail <- function(sample_size, threshold) {
+  accepted_values <- numeric(sample_size)
+  accepted_count <- 0
+  total_trials <- 0
+
+  while (accepted_count < sample_size) {
+    first_exponential <- rexp(1, rate = threshold)
+    second_exponential <- rexp(1, rate = 1)
+    total_trials <- total_trials + 1
+
+    if (second_exponential >= first_exponential^2 / 2) {
+      accepted_count <- accepted_count + 1
+      accepted_values[accepted_count] <- threshold + first_exponential
+    }
+  }
+
+  list(
+    sample = accepted_values,
+    acceptance_rate = sample_size / total_trials
+  )
+}
+```
+
+# Simulation Studies
+
+## Half-Normal Density via an Exponential(1) Envelope
+
+The half-Normal density $f(x) = \sqrt{2/\pi}\, e^{-x^2/2}$, $x>0$, is
+generated using the Exponential$(1)$ proposal $g(x) = e^{-x}$, with
+bounding constant $M^{*} = \sqrt{2e/\pi}$ derived in the Numerical
+Examples section below.
+
+```{r half-normal-simulation}
+set.seed(123)
+
+m_half_normal <- sqrt(2 * exp(1) / pi)
+
+half_normal_result <- accept_reject(
+  sample_size = 20000,
+  target_density = function(x) sqrt(2 / pi) * exp(-x^2 / 2),
+  proposal_density = function(x) exp(-x),
+  proposal_sampler = function() rexp(1, rate = 1),
+  bounding_constant = m_half_normal
+)
+
+tibble(
+  Quantity = c("Theoretical M", "Theoretical acceptance rate (1/M)", "Empirical acceptance rate"),
+  Value = c(m_half_normal, 1 / m_half_normal, half_normal_result$acceptance_rate)
+) %>%
+  kable(digits = 4, caption = "Half-Normal acceptance-rejection: theory vs simulation")
+```
+
+The empirical acceptance rate closely tracks the theoretical value
+$1/M^{*} \approx 0.760$, confirming Theorem 4.2 directly.
+
+## Beta(2,2) Density via a Uniform Envelope
+
+```{r beta-simulation}
+set.seed(123)
+
+beta_result <- accept_reject(
+  sample_size = 20000,
+  target_density = function(x) 6 * x * (1 - x),
+  proposal_density = function(x) rep(1, length(x)),
+  proposal_sampler = function() runif(1),
+  bounding_constant = 1.5
+)
+
+tibble(
+  Quantity = c("Theoretical M", "Theoretical acceptance rate (1/M)", "Empirical acceptance rate"),
+  Value = c(1.5, 1 / 1.5, beta_result$acceptance_rate)
+) %>%
+  kable(digits = 4, caption = "Beta(2,2) acceptance-rejection: theory vs simulation")
+```
+
+## Exponential Tilting vs. Naive Rejection for the Normal Tail
+
+This simulation contrasts the tilted "two exponentials" algorithm
+against the naive strategy of drawing standard Normal variates and
+discarding those at or below the threshold, for a moderately deep
+threshold $a=3$.
+
+```{r tilting-comparison}
+set.seed(123)
+
+threshold_value <- 3
+q_theoretical <- 1 - pnorm(threshold_value)
+
+# Naive method: draw standard Normal variates, keep only those above a
+naive_trials <- 200000
+naive_draws <- rnorm(naive_trials)
+naive_acceptance_rate <- mean(naive_draws > threshold_value)
+
+# Tilted method
+tilted_result <- tilted_normal_tail(sample_size = 5000, threshold = threshold_value)
+
+m_tilted_theoretical <- dnorm(threshold_value) / (threshold_value * q_theoretical)
+
+comparison_tbl <- tibble(
+  Method = c("Naive (discard Z <= a)", "Exponentially tilted (two exponentials)"),
+  Theoretical_Acceptance_Rate = c(q_theoretical, 1 / m_tilted_theoretical),
+  Empirical_Acceptance_Rate = c(naive_acceptance_rate, tilted_result$acceptance_rate)
+)
+
+kable(comparison_tbl, digits = 5,
+      caption = "Naive rejection vs. exponentially tilted rejection for Z | Z > 3")
+```
+
+The tilted method accepts the overwhelming majority of its candidates,
+while the naive method accepts roughly one candidate in every
+$1/Q(3) \approx 741$; the tilted algorithm therefore requires several
+orders of magnitude fewer total random draws to produce the same
+number of tail observations, exactly as predicted by the asymptotic
+argument following (4.9).
+
+# Graphs
+
+```{r density-overlay-plots, fig.cap="Simulated samples (histograms) against theoretical target densities (curves) for the half-Normal (left) and Beta(2,2) (right) acceptance-rejection examples."}
+set.seed(123)
+
+p_half_normal <- ggplot(tibble(x = half_normal_result$sample), aes(x = x)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 40, fill = "steelblue", colour = "white") +
+  stat_function(fun = function(x) sqrt(2 / pi) * exp(-x^2 / 2), colour = "darkred", linewidth = 1) +
+  labs(title = "Half-Normal via Exponential(1) envelope", x = "x", y = "Density") +
+  theme_minimal(base_size = 11)
+
+p_beta <- ggplot(tibble(x = beta_result$sample), aes(x = x)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 40, fill = "darkgreen", colour = "white") +
+  stat_function(fun = function(x) 6 * x * (1 - x), colour = "darkred", linewidth = 1) +
+  labs(title = "Beta(2,2) via Uniform envelope", x = "x", y = "Density") +
+  theme_minimal(base_size = 11)
+
+p_half_normal + p_beta
+```
+
+```{r tail-overlay-plot, fig.cap="Simulated tilted-envelope sample against the exact truncated Normal density for Z | Z > 3."}
+set.seed(123)
+
+truncated_normal_density <- function(x, threshold) {
+  dnorm(x) / (1 - pnorm(threshold))
+}
+
+ggplot(tibble(x = tilted_result$sample), aes(x = x)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30, fill = "purple", colour = "white", alpha = 0.7) +
+  stat_function(
+    fun = truncated_normal_density, args = list(threshold = threshold_value),
+    colour = "black", linewidth = 1
+  ) +
+  labs(
+    title = "Exponentially tilted sample vs. exact truncated Normal density",
+    x = "x", y = "Density"
+  ) +
+  theme_minimal(base_size = 11)
+```
+
+# Numerical Examples
+
+**Example 1: Bounding constant and one iteration for the half-Normal
+density.**
+
+*Problem.* Using the target $f(x) = \sqrt{2/\pi}\,e^{-x^2/2}$, $x>0$,
+and proposal $g(x)=e^{-x}$, derive $M^{*}$ and determine whether the
+candidate $y=0.8$ with $u=0.30$ is accepted.
+
+*Solution.* The ratio is
+$f(x)/g(x) = \sqrt{2/\pi}\,\exp(-x^2/2+x)$. Writing the exponent as
+$-\tfrac12(x-1)^2 + \tfrac12$ (completing the square as in (4.8)-(4.9)
+with $a=1$), the maximum over $x>0$ occurs at $x=1$, giving
+
+$$
+M^{*} = \sqrt{2/\pi}\,e^{1/2} = \sqrt{2e/\pi} \approx 1.3155.
+$$
+
+For the candidate $y=0.8$: $f(0.8) = \sqrt{2/\pi}\,e^{-0.32} =
+0.7979\times 0.7261 = 0.5794$, and $M^{*}g(0.8) = 1.3155\times
+e^{-0.8} = 1.3155\times 0.4493 = 0.5911$. The acceptance ratio is
+$0.5794/0.5911 = 0.9802$. Since $u=0.30 \le 0.9802$, the candidate is
+**accepted**, and $x=0.8$ is reported.
+
+*Interpretation.* Because $0.8$ is close to the mode $1$ of the ratio
+$f/g$, the acceptance ratio is close to its maximum value of $1$; a
+candidate far from this mode would have a much smaller acceptance
+ratio and would be rejected more often, which is exactly the pattern
+verified in bulk by the simulation study above.
+
+**Example 2: Manual acceptance-rejection trial for Beta(2,2).**
+
+*Problem.* Using $f(x) = 6x(1-x)$ on $(0,1)$ and the Uniform$(0,1)$
+envelope with $M=1.5$, determine the outcome for the candidate
+$y=0.9$ with $u=0.5$, and separately for $y=0.9$ with $u=0.2$.
+
+*Solution.* $f(0.9) = 6(0.9)(0.1) = 0.54$, and $Mg(0.9) = 1.5(1) =
+1.5$, so the acceptance ratio is $0.54/1.5 = 0.36$. With $u=0.5$,
+since $0.5 > 0.36$, the candidate is **rejected**. With $u=0.2$,
+since $0.2 \le 0.36$, the candidate is **accepted**, and $x=0.9$ is
+reported.
+
+*Interpretation.* The value $y=0.9$ lies far from the mode of the
+Beta$(2,2)$ density (which is at $x=0.5$), so its acceptance ratio of
+$0.36$ is well below $1$; roughly $64\%$ of candidates equal to $0.9$
+would be rejected, consistent with the overall acceptance rate of
+$1/1.5 \approx 0.667$ averaged across all candidate locations.
+
+**Example 3: Exponential tilting for the Normal tail at $a=2$.**
+
+*Problem.* Compute the optimal bounding constant $M^{*}$ and the
+acceptance probability for simulating $Z \mid Z>2$ using the
+exponentially tilted envelope with $\theta=a=2$.
+
+*Solution.* From (4.9), $M^{*} = \varphi(2)/(2\,Q(2))$. Using
+$\varphi(2) = (2\pi)^{-1/2}e^{-2} = 0.05399$ and
+$Q(2) = 1-\Phi(2) = 0.02275$,
+
+$$
+M^{*} = \frac{0.05399}{2 \times 0.02275} = \frac{0.05399}{0.04550}
+= 1.1866,
+$$
+
+so the acceptance probability is $1/M^{*} \approx 0.8427$. By
+contrast, the naive method of drawing $Z\sim N(0,1)$ and discarding
+$Z \le 2$ has acceptance probability $Q(2) = 0.02275$ — the tilted
+method is roughly $37$ times more efficient at this threshold, and
+this efficiency ratio grows without bound as the threshold increases
+further.
+
+*Interpretation.* The R simulation for threshold $a=3$ above shows the
+same phenomenon even more starkly, since the naive acceptance rate
+$Q(3) \approx 0.00135$ falls rapidly with $a$ while the tilted
+acceptance rate stays comfortably above $0.9$.
+
+# Applications
+
+- **Statistics.** Exact simulation from non-standard likelihoods and
+  from densities specified only up to a normalizing constant, a
+  routine situation in maximum likelihood and Bayesian computation.
+- **Machine Learning.** Sampling from complex latent-variable models
+  and from priors or posteriors lacking a closed-form quantile
+  function; acceptance-rejection also underlies certain
+  reparameterization strategies for gradient-based training with
+  non-standard noise distributions.
+- **Data Science.** Generating synthetic data that matches an
+  empirically estimated density for stress-testing pipelines, when
+  the estimated density has no simple quantile function.
+- **Finance.** Simulating extreme portfolio losses and tail risk
+  measures (Value-at-Risk, Expected Shortfall) efficiently using
+  exponential tilting rather than brute-force Monte Carlo.
+- **Reliability Engineering.** Simulating rare early-failure or
+  extreme-stress events for structural or component reliability
+  analysis, where naive simulation would require an infeasible number
+  of trials.
+- **Monte Carlo Methods.** Acceptance-rejection is one of the two
+  foundational exact-sampling techniques (alongside inverse
+  transformation) taught in every Monte Carlo methods course, and
+  importance sampling — a closely related variance-reduction
+  technique — borrows the same tilting idea used in Section 7.2.
+- **Bayesian Statistics.** Exact posterior sampling when the posterior
+  kernel is bounded by a tractable envelope, and as the textbook
+  benchmark against which the bias-variance trade-offs of Markov
+  chain Monte Carlo approximations are explained.
+- **Operations Research.** Simulating rare congestion or failure
+  events in queueing and network reliability models.
+- **Engineering.** Monte Carlo reliability analysis of systems
+  subjected to random loads whose extreme-value behaviour, rather than
+  typical behaviour, determines the design margin.
+
+# Advantages
+
+- The method is exact: for any valid $(g, M)$ pair, the accepted
+  variate has precisely the target distribution, with no approximation
+  error, unlike Markov chain Monte Carlo methods, which converge only
+  asymptotically.
+- No quantile function, and no closed-form cumulative distribution
+  function, is ever required.
+- The target density need only be known up to an unknown
+  multiplicative constant (Theorem 4.1, Applications remark), which is
+  essential for Bayesian posterior simulation.
+- The method extends without modification to multivariate targets,
+  provided a suitable multivariate envelope and bounding constant can
+  be found.
+
+# Limitations
+
+- Efficiency is entirely governed by $M$; a poorly matched envelope
+  can make the method arbitrarily slow, and in high dimensions, even a
+  well-matched envelope typically forces $M$ to grow rapidly with
+  dimension, a manifestation of the curse of dimensionality.
+- A finite $M$ may not exist at all if the proposal's tail is lighter
+  than the target's tail, as in the Cauchy-from-Normal example of
+  Section 6.
+- Finding the optimal $M^{*} = \sup_x f(x)/g(x)$ analytically requires
+  calculus that may be intractable for complicated densities, forcing
+  numerical optimization and the risk of an invalid (too small) $M$
+  if the optimization is not exhaustive.
+- The number of iterations required is random (Theorem 4.2), so,
+  unlike inverse transformation, the running time of a single call to
+  the algorithm is not fixed in advance.
+
+# Practical Tips
+
+- **Always verify the envelope condition over the entire support, not
+  just near the mode.** A very common implementation bug is checking
+  $f(x) \le Mg(x)$ only at a handful of sample points; if the
+  inequality fails anywhere, the output is silently biased with no
+  runtime error to signal the mistake.
+- **Match tail behaviour first, then optimize $M$.** An envelope whose
+  tail decays no faster than the target's tail is a prerequisite for
+  a finite $M$ to exist at all; only after this is satisfied does
+  minimizing $M^{*}$ become the relevant optimization.
+- **Work on the log scale for extreme densities.** Comparing $\log U$
+  against $\log f(Y) - \log M - \log g(Y)$ avoids underflow when $f$
+  or $g$ take values far from $1$, which is common for high-dimensional
+  or heavy-tailed densities.
+- **Use exponential tilting whenever the target region is a distant
+  tail.** As demonstrated in Section 10.3, naive rejection from the
+  parent distribution becomes catastrophically inefficient in the
+  tail, while a tilted envelope becomes more efficient the further out
+  the tail region lies.
+- **Monitor the empirical acceptance rate during development.** A
+  large discrepancy between the theoretical $1/M$ and the observed
+  acceptance rate usually indicates an error in the density functions
+  or in the bounding constant, rather than ordinary sampling
+  variability.
+
+# Summary
+
+- The acceptance-rejection method simulates from a target density $f$
+  using only a proposal density $g$ and a bounding constant $M$ with
+  $f \le Mg$, requiring neither a quantile function nor knowledge of
+  the target's normalizing constant.
+- A candidate $Y\sim g$ is accepted as an exact draw from $f$ whenever
+  an independent Uniform$(0,1)$ draw does not exceed $f(Y)/(Mg(Y))$;
+  Theorem 4.1 proves this gives exactly the target distribution.
+- The acceptance probability of each trial is exactly $1/M$, and the
+  number of trials until acceptance is Geometric$(1/M)$ with mean $M$
+  (Theorem 4.2), which makes minimizing $M$ the central design goal.
+- The optimal bounding constant is $M^{*} = \sup_x f(x)/g(x)$; a
+  finite $M^{*}$ requires the proposal's tail to be at least as heavy
+  as the target's.
+- Exponential tilting re-weights a base density by $e^{\theta x}$ to
+  construct proposals well matched to a target tail region; applied to
+  the standard Normal tail, it yields the elegant "two exponentials"
+  algorithm whose efficiency improves, rather than worsens, as the
+  threshold moves further into the tail.
+
+# Key Formulae
+
+- Bounding condition: $f(x) \le Mg(x)$ for all $x$ in the support.
+- Acceptance rule: accept $Y$ if $U \le f(Y)/(Mg(Y))$.
+- Acceptance probability per trial: $1/M$.
+- Optimal bounding constant: $M^{*} = \sup_x f(x)/g(x)$.
+- Trials until acceptance: $N \sim \text{Geometric}(1/M)$,
+  $E(N) = M$.
+- Exponentially tilted density: $h_\theta(x) = e^{\theta x}h(x)/M_h(\theta)$.
+- Tilted Normal-tail envelope ($\theta=a$): $g(x)=ae^{-a(x-a)}$,
+  $x>a$; acceptance ratio $\exp(-(x-a)^2/2)$;
+  $M^{*} = \varphi(a)/(aQ(a))$.
+
+# Key Terms
+
+- **Acceptance-rejection method.** A simulation technique that
+  generates exact draws from a target density by accepting or
+  rejecting candidates drawn from a proposal density, according to a
+  ratio of densities.
+- **Bounding constant ($M$).** The smallest constant such that the
+  target density never exceeds $M$ times the proposal density.
+- **Envelope (proposal, instrumental) density.** The density $g$
+  actually used to generate candidates.
+- **Exponential tilting.** Re-weighting a density by an exponential
+  factor $e^{\theta x}$ to shift its mass toward a region of interest,
+  most often a distribution's tail.
+- **Mills ratio.** The ratio $Q(a)/\varphi(a)$ (or its reciprocal),
+  describing the asymptotic decay of the Normal tail probability.
+- **Rejection sampling.** A synonym for the acceptance-rejection
+  method.
+- **Target density.** The density $f$ from which a sample is
+  ultimately desired.
+- **Truncated distribution.** A distribution restricted to a subset of
+  its original support and renormalized to integrate to one.
+
+# Exercises
+
+## Multiple Choice Questions
+
+1. The acceptance-rejection method requires
+   (a) a closed-form quantile function for the target density
+   (b) a proposal density and a valid bounding constant $M$
+   (c) the target density to be Normal
+   (d) the moment generating function of the target
+
+2. The probability that a single trial is accepted equals
+   (a) $M$
+   (b) $1/M$
+   (c) $f(Y)$
+   (d) $g(Y)$
+
+3. The number of trials until the first acceptance follows a
+   (a) Binomial distribution
+   (b) Poisson distribution
+   (c) Geometric distribution
+   (d) Normal distribution
+
+4. The optimal bounding constant $M^{*}$ is defined as
+   (a) $\inf_x f(x)/g(x)$
+   (b) $\sup_x f(x)/g(x)$
+   (c) $\int f(x)/g(x)\,dx$
+   (d) $E[f(X)/g(X)]$
+
+5. A finite bounding constant fails to exist when
+   (a) the proposal's tail is heavier than the target's tail
+   (b) the proposal's tail is lighter than the target's tail
+   (c) the target is bounded
+   (d) the proposal is Uniform
+
+6. Exponential tilting re-weights a base density by
+   (a) $\log(x)$
+   (b) $e^{\theta x}$
+   (c) $x^\theta$
+   (d) $1/x$
+
+7. For the tilted Normal-tail envelope with $\theta=a$, the
+   acceptance ratio simplifies to
+   (a) $e^{-(x-a)^2/2}$
+   (b) $e^{-x^2/2}$
+   (c) $a e^{-ax}$
+   (d) $\Phi(x)-\Phi(a)$
+
+8. As the threshold $a$ increases, the tilted-envelope acceptance
+   probability
+   (a) decreases toward zero
+   (b) stays exactly constant
+   (c) increases toward one
+   (d) becomes undefined
+
+9. The acceptance-rejection method remains exact even when the target
+   density is known only up to
+   (a) a location shift
+   (b) an unknown multiplicative constant
+   (c) an unknown scale parameter only
+   (d) it cannot be used in this situation
+
+10. Working on the log scale during acceptance comparison primarily
+    guards against
+    (a) slow convergence of Markov chains
+    (b) floating-point underflow
+    (c) violation of the Hull-Dobell theorem
+    (d) loss of the Markov property
+
+**Answers.** 1(b), 2(b), 3(c), 4(b), 5(b), 6(b), 7(a), 8(c), 9(b),
+10(b).
+
+## Short Answer Questions
+
+1. Explain why the inverse transformation method is sometimes
+   unusable, motivating the need for acceptance-rejection.
+2. State the bounding condition that $M$, $f$, and $g$ must satisfy,
+   and explain in words what happens if this condition is violated
+   somewhere in the support.
+3. Derive the unconditional acceptance probability of a single trial
+   from first principles.
+4. Explain, without invoking the formal proof, the geometric picture
+   underlying the correctness of the method.
+5. Why does the choice $M = M^{*} = \sup_x f(x)/g(x)$ minimize the
+   expected number of trials per accepted observation?
+6. Give an example of a target-proposal pairing for which no finite
+   $M$ exists, and explain why.
+7. Define exponential tilting and explain, intuitively, why increasing
+   $\theta$ shifts mass toward larger values.
+8. Why does the acceptance-rejection method remain exact when the
+   target density is known only up to a multiplicative constant?
+9. Explain why the tilted "two exponentials" algorithm requires no
+   evaluation of $\Phi$ or $\varphi$ at run time.
+10. Why is working on the log scale recommended for high-dimensional
+    or heavy-tailed acceptance-rejection implementations?
+
+## Long Answer Questions
+
+1. State and prove Theorem 4.1, explaining each step of both the
+   algebraic derivation and, separately, the geometric argument given
+   in the Remarks.
+2. State and prove Theorem 4.2, and explain its practical implications
+   for the choice of $M$.
+3. Derive the optimal bounding constant and acceptance ratio for the
+   half-Normal density generated from an Exponential$(1)$ proposal,
+   showing every algebraic step.
+4. Derive the tilted envelope, the optimal-form bounding constant
+   $M^{*}$, and the simplified acceptance ratio for simulating the
+   standard Normal tail beyond a threshold $a$, using tilting
+   parameter $\theta=a$.
+5. Explain, with reference to the Mills ratio, why the tilted-envelope
+   method becomes more efficient as the threshold $a$ increases, while
+   the naive method becomes less efficient.
+6. Compare the acceptance-rejection method with the inverse
+   transformation method in terms of generality, computational cost,
+   and the information required about the target distribution.
+7. Discuss the curse of dimensionality as it affects
+   acceptance-rejection sampling in high-dimensional settings, and
+   explain why Markov chain Monte Carlo methods are often preferred in
+   that regime despite being only asymptotically exact.
+8. Explain how the acceptance-rejection method is used for Bayesian
+   posterior simulation when the normalizing constant of the posterior
+   is unknown, and why this is not a drawback under Theorem 4.1.
+9. Discuss common implementation errors in acceptance-rejection
+   sampling and the diagnostic role of comparing empirical and
+   theoretical acceptance rates.
+10. Trace the historical development of the acceptance-rejection
+    method from von Neumann's original proposal to its modern role as
+    a benchmark for exact simulation, including the role of
+    exponential tilting in extending its reach to rare-event
+    simulation.
+
+## Programming Exercises
+
+1. Implement `accept_reject()` from first principles (already provided
+   in this unit) and use it to reproduce the manual calculation of
+   Example 2 by fixing the random seed appropriately.
+2. Write an R function that numerically estimates $M^{*} =
+   \sup_x f(x)/g(x)$ for arbitrary $f$ and $g$ using `optimize()`, and
+   verify it against the analytic value $\sqrt{2e/\pi}$ for the
+   half-Normal example.
+3. Implement the tilted "two exponentials" algorithm from first
+   principles (already provided) and use it to estimate $P(Z>4 \mid
+   Z>4)$-style tail quantiles (e.g. the 99th percentile of the
+   truncated distribution) from a large tilted sample.
+4. Using `system.time()`, compare the total number of random draws
+   consumed by the naive and tilted methods to produce $1000$
+   observations of $Z \mid Z>3$, and report the ratio.
+5. Write an R function implementing acceptance-rejection for the
+   Beta$(\alpha,\beta)$ density with a Uniform envelope for general
+   $\alpha,\beta \ge 1$, computing the required $M$ analytically from
+   the mode of the Beta density.
+6. Simulate $n=5000$ observations from the target
+   $f(x) \propto e^{-x}\bigl(1+\sin^2(3x)\bigr)$, $x>0$ (an unnormalized
+   density with no closed form for its normalizing constant), using an
+   Exponential$(1)$ proposal, and verify graphically that the
+   histogram matches $f$ up to a constant.
+7. Write a function that logs, for each rejected candidate, its value
+   and its acceptance ratio, and produce a plot showing the
+   distribution of acceptance ratios across many rejected candidates
+   for the Beta$(2,2)$ example.
+8. Implement a general-purpose acceptance-rejection sampler that works
+   entirely on the log scale (log-target, log-proposal, log-$M$), and
+   verify it reproduces the same output distribution as the ordinary-
+   scale implementation for the half-Normal example.
+9. Investigate empirically what happens when an invalid (too small)
+   $M$ is used for the Beta$(2,2)$ example — implement the sampler
+   with $M=1$ instead of $M=1.5$, generate a large sample, and use a
+   Kolmogorov-Smirnov test (`ks.test()`) to demonstrate the resulting
+   bias.
+10. Write an R function comparing, across a grid of thresholds
+    $a \in \{1,2,3,4,5\}$, the theoretical acceptance probabilities of
+    the naive and tilted methods, and produce a `ggplot2` figure on a
+    logarithmic y-axis showing how the gap widens with $a$.
+
+## Mini Projects
+
+1. **A general-purpose tilted-envelope tail sampler.** Extend the
+   Normal-tail tilting construction of this unit to the Exponential
+   and Gamma distributions: for each, derive (or look up and verify
+   numerically) a tilted proposal suited to simulating the extreme
+   right tail, implement the corresponding acceptance-rejection
+   sampler in R, and benchmark its acceptance rate against naive
+   rejection across a range of thresholds. Summarize your findings,
+   including the algebraic derivation for at least one distribution
+   beyond the Normal, in a short report.
+
+2. **Diagnosing and repairing a biased sampler.** Take the Beta$(2,2)$
+   acceptance-rejection example and deliberately introduce three
+   different bugs, one at a time: (i) an invalid (too small) $M$; (ii)
+   a proposal density with lighter support than the target (e.g. a
+   Uniform$(0.1, 0.9)$ proposal); (iii) reusing the same uniform draw
+   $U$ both to generate the candidate and to decide acceptance instead
+   of drawing two independent uniforms. For each bug, generate a large
+   sample, compare it to the true Beta$(2,2)$ density both graphically
+   and using a formal goodness-of-fit test, and explain, from first
+   principles, why each bug produces the biased behaviour observed.
+
+**Difficulty labels.** Multiple choice, short answer: **Easy**. Long
+answer questions 3, 6, 7, 9, programming exercises 1-6: **Medium**.
+Long answer questions 1, 2, 4, 5, 8, 10, programming exercises 7-10:
+**Medium to Advanced**. Mini projects: **Advanced**.
+
+# References
+
+Devroye, L. (1986). *Non-uniform random variate generation*.
+Springer-Verlag.
+
+Marsaglia, G. (1964). Generating a variable from the tail of the
+normal distribution. *Technometrics*, 6(1), 101-102.
+
+Robert, C. P., & Casella, G. (2004). *Monte Carlo statistical
+methods* (2nd ed.). Springer.
+
+Ripley, B. D. (1987). *Stochastic simulation*. Wiley.
+
+Rizzo, M. L. (2019). *Statistical computing with R* (2nd ed.). CRC
+Press.
+
+Ross, S. M. (2020). *Simulation* (6th ed.). Academic Press.
+
+von Neumann, J. (1951). Various techniques used in connection with
+random digits. In *Monte Carlo Method* (National Bureau of Standards
+Applied Mathematics Series 12, pp. 36-38). U.S. Government Printing
+Office.
