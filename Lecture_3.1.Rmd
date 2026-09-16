@@ -1,0 +1,227 @@
+---
+title: "Lecture 3.1: Theory of Random Number Generation"
+author: "Dr. Manoj C. Patil"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.align = "center")
+```
+
+## Motivation
+
+Every simulation — a Monte Carlo integral, a bootstrap resample, a
+randomized algorithm — ultimately needs a long supply of numbers that
+*behave* like independent draws from the Uniform$(0,1)$ distribution.
+A computer cannot produce numbers that are genuinely random (its
+arithmetic is entirely deterministic), so instead it produces numbers
+that are deterministic but designed to be statistically
+indistinguishable from random ones. Understanding exactly how this is
+done, and exactly where it can go wrong, is the purpose of this
+lecture.
+
+## Intuition
+
+Imagine a clock face with $m$ marks on it. Starting at some mark
+$X_0$, suppose a rule says: multiply the current mark by $a$, add
+$c$, and read off the remainder after dividing by $m$ — that
+remainder becomes the next mark. Even though this rule is completely
+mechanical, the sequence of marks visited can look erratic, jumping
+around the clock face in no obvious pattern, *provided* $a$, $c$, and
+$m$ are chosen well. If they are chosen badly, the sequence might
+visit only a handful of marks before repeating itself, which would be
+disastrous for a simulation expecting thousands of "independent"
+values. The mathematics below answers, precisely, which choices of
+$a,c,m$ guarantee that *every* mark on the clock face is visited
+exactly once before the sequence repeats.
+
+## Pseudo-Random Numbers
+
+**Definition 1.1.** A *pseudo-random number generator* (PRNG) is a
+deterministic recurrence $X_{n+1} = g(X_n)$ on a finite state space
+$S = \{0,1,\dots,m-1\}$, together with a seed $X_0 \in S$ and an
+output map $U_n = X_n/m \in [0,1)$, intended to imitate independent
+Uniform$(0,1)$ draws. Because $S$ has only $m$ elements, the sequence
+$(X_n)$ must eventually repeat itself (among any $m+1$ terms, two must
+coincide); the smallest $P$ with $X_{n+P}=X_n$ for all large $n$ is
+called the *period*. If $P=m$, every possible state is visited once
+per cycle, and the generator is said to have **full period** — the
+best a deterministic recurrence on $m$ states can achieve.
+
+## The Linear Congruential Generator
+
+**Definition 1.2.** The *linear congruential generator* (LCG) is the
+clock-arithmetic rule described above,
+
+$$
+X_{n+1} = (aX_n+c) \bmod m,
+$$
+
+with multiplier $a$, increment $c$, and modulus $m$. Setting $c=0$
+gives the *multiplicative* generator (MCG), historically the first
+version proposed (Lehmer, 1949); keeping $c\ne0$ gives the *mixed*
+generator, which — as the next theorem shows — can achieve full
+period on *any* modulus, not only a prime one.
+
+The following theorem is the central result of this lecture: it
+converts the vague hope "the sequence should look random" into three
+checkable arithmetic conditions on $a$, $c$, and $m$.
+
+**Theorem 1.1 (Hull–Dobell, 1962).** The LCG has full period $m$ for
+every seed if and only if
+
+1. $\gcd(c,m)=1$;
+2. $a\equiv 1 \pmod p$ for every prime $p\mid m$;
+3. $a\equiv 1 \pmod 4$ if $4\mid m$.
+
+*Proof.* The first step is to write down the state after $n$ steps
+explicitly, rather than one step at a time. Unrolling the recurrence
+$X_1=(aX_0+c)\bmod m$, $X_2=(aX_1+c)\bmod m,\dots$ and substituting
+repeatedly gives the closed form
+
+$$
+X_n = \bigl(a^nX_0 + cS(n)\bigr)\bmod m, \qquad S(n)=\sum_{i=0}^{n-1}a^i,
+$$
+
+which can be checked by induction: it holds for $n=1$, and if it
+holds for $n$ then $X_{n+1}=(aX_n+c)\bmod m =
+\bigl(a^{n+1}X_0+c(aS(n)+1)\bigr)\bmod m$, and $aS(n)+1=S(n+1)$ by
+direct expansion of the geometric sum.
+
+Full period means that $n=m$ is the *smallest* positive integer for
+which $X_n$ returns to $X_0$, and this must hold *simultaneously for
+every possible seed* $X_0$ — not just for one lucky starting value.
+Comparing the closed form above at two different seeds (or, equally,
+comparing the coefficient of $X_0$ and the constant term separately)
+shows that "$X_n\equiv X_0\pmod m$ for every $X_0$" is equivalent to
+the pair of conditions $a^n\equiv1\pmod m$ and $cS(n)\equiv0\pmod m$
+holding together, and full period asks that $n=m$ be the smallest $n$
+for which both hold.
+
+Now write $b=a-1$. Conditions (2) and (3) say exactly that $p\mid b$
+for every prime $p$ dividing $m$, and that $4\mid b$ whenever $4\mid
+m$. A classical number-theoretic fact (the "lifting-the-exponent"
+lemma; see Knuth, 1997, §3.2.1.2) says that these two divisibility
+requirements on $b$ are *precisely* what is needed to guarantee, for
+every prime power $p^{e}$ exactly dividing $m$, that $p^{e}\mid S(n)$
+as soon as $p^{e}\mid n$ — and no earlier. Piecing the prime-power
+factors of $m$ back together with the Chinese Remainder Theorem then
+shows $a^m\equiv1\pmod m$ and $m\mid S(m)$, with no smaller $n$
+achieving both. Condition (1), $\gcd(c,m)=1$, is exactly what allows
+$cS(n)\equiv0\pmod m$ to be replaced by the condition $m\mid S(n)$
+regardless of the specific value of $c$. Putting these pieces
+together shows the smallest valid $n$ is exactly $m$.
+
+For the converse, if any one of the three conditions fails for some
+prime power factor of $m$, the map $X\mapsto(aX+c)\bmod m$, restricted
+to that factor, fails to be a single cycle through all its residues;
+since the overall cycle structure on $\mathbb{Z}_m$ is built from the
+cycle structures on its prime-power factors (again via the Chinese
+Remainder Theorem), a shorter cycle on any one factor forces a period
+shorter than $m$ overall. $\blacksquare$
+
+**Worked example.** Take $a=5$, $c=3$, $m=16$, seed $X_0=7$. Since
+$16=2^4$, the only prime factor is $p=2$; check $a-1=4$, which is
+divisible by $2$ (condition 2) and by $4$ (condition 3, since $4\mid
+16$); also $\gcd(3,16)=1$ (condition 1). All three conditions hold, so
+the theorem guarantees full period $16$. Iterating by hand,
+
+$$
+X_1=(5\cdot7+3)\bmod16=38\bmod16=6,\quad
+X_2=(5\cdot6+3)\bmod16=33\bmod16=1,
+$$
+$$
+X_3=(5\cdot1+3)\bmod16=8,\qquad X_4=(5\cdot8+3)\bmod16=11,\qquad X_5=(5\cdot11+3)\bmod16=10,
+$$
+
+and continuing this process visits all $16$ residues $0,\dots,15$
+exactly once before the sequence returns to $X_0=7$, exactly as
+promised.
+
+**Lemma 1.2.** If $m$ is prime, the MCG $X_{n+1}=aX_n \bmod m$ (seed
+$X_0\ne0$) has period equal to the multiplicative order of $a$ modulo
+$m$; this attains its maximum, $m-1$, exactly when $a$ is a
+**primitive root** mod $m$.
+
+*Proof.* Because $m$ is prime, the nonzero residues
+$\{1,\dots,m-1\}$ form a group under multiplication modulo $m$ — the
+group $(\mathbb Z/m\mathbb Z)^{*}$, of order $m-1$. The orbit
+$X_n=a^nX_0$ returns to its starting value $X_0$ exactly when
+$a^n\equiv1\pmod m$, that is, exactly when $n$ is a multiple of the
+smallest such exponent, called the multiplicative order
+$\operatorname{ord}(a)$. Lagrange's theorem for finite groups says
+$\operatorname{ord}(a)$ must divide the group's order $m-1$, so the
+period can never exceed $m-1$; it equals $m-1$ exactly when $a$'s
+powers sweep out the *entire* group before repeating, which is the
+definition of a primitive root. $\blacksquare$
+
+**Worked example.** With $m=31$ (prime) and $a=3$, computing
+successive powers of $3$ modulo $31$ — $3,9,27,19,26,16,17,20,29,25,
+13,8,24,10,30,28,22,4,12,5,15,14,11,2,6,18,23,7,21,1$ — shows that $1$
+first reappears only at the $30$-th power. Since $30=m-1$, this
+confirms $3$ is a primitive root modulo $31$, and the corresponding
+MCG has the maximal possible period, $30$.
+
+## Why Full Period Is Not the Whole Story
+
+**Remark.** Full period only guarantees that every state is visited
+once per cycle; it says nothing about whether *consecutive* outputs
+look independent of one another when viewed several at a time. The
+generator RANDU ($a=65539$, $c=0$, $m=2^{31}$), once used widely on
+IBM mainframes, illustrates this dramatically. Because
+$a=2^{16}+3$, squaring gives $a^2=2^{32}+6\cdot2^{16}+9$, and since
+$2^{32}\equiv0\pmod{2^{31}}$, this reduces to the exact identity
+$a^2\equiv6a-9\pmod{2^{31}}$. Multiplying through by $X_n$ (recall the
+generator is $X_{n+1}=aX_n\bmod2^{31}$, so $X_{n+2}=a^2X_n\bmod
+2^{31}$) gives
+
+$$
+X_{n+2}\equiv 6X_{n+1}-9X_n \pmod{2^{31}}.
+$$
+
+**Numerical check.** With $a=65539$, direct computation gives
+$a^2\bmod2^{31}=393225$ and $6a-9=6(65539)-9=393225$ — the two sides
+agree exactly, confirming the identity is not an approximation but an
+exact arithmetic fact about this specific multiplier.
+
+In words: every *third* value in the sequence is an exact linear
+combination of the two before it. Geometrically, this forces every
+triple of consecutive outputs $(U_n,U_{n+1},U_{n+2})$, plotted as a
+point in the unit cube, to lie on one of only $15$ parallel planes,
+rather than filling the cube — a severe defect that is completely
+invisible if one only looks at pairs of consecutive values, as the
+figure below shows.
+
+```{r randu-plot, fig.width=6, fig.height=3, fig.cap="Successive pairs from RANDU (left) versus a well-chosen generator (right); the planar defect of RANDU only becomes visible in three dimensions."}
+mcg <- function(seed, a, m, n) {
+  x <- numeric(n); cur <- seed
+  for (i in 1:n) { cur <- (a * cur) %% m; x[i] <- cur }
+  x / m
+}
+n <- 2000
+randu <- mcg(1, 65539, 2^31, n)
+good <- runif(n)
+par(mfrow = c(1, 2), mar = c(4, 4, 2, 1))
+plot(randu[-n], randu[-1], pch = 16, cex = 0.3, col = "firebrick",
+     xlab = expression(U[n]), ylab = expression(U[n+1]), main = "RANDU")
+plot(good[-n], good[-1], pch = 16, cex = 0.3, col = "steelblue",
+     xlab = expression(U[n]), ylab = expression(U[n+1]), main = "runif()")
+```
+
+The lesson is that the Hull–Dobell theorem and Lemma 1.2 certify only
+the *arithmetic* property of full period; whether the output also
+*looks* statistically random — the subject of the next lecture — must
+be checked separately.
+
+## References
+
+Hull, T. E., & Dobell, A. R. (1962). Random number generators. *SIAM
+Review*, 4(3), 230–254.
+
+Knuth, D. E. (1997). *The art of computer programming, Volume 2:
+Seminumerical algorithms* (3rd ed.). Addison-Wesley.
+
+Lehmer, D. H. (1949). Mathematical methods in large-scale computing
+units. *Proceedings of the Second Symposium on Large-Scale Digital
+Calculating Machinery*, 141–146.

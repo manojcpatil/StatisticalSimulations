@@ -3,6 +3,8 @@ title: "Unit 3.1: Theory of Random Number Generation"
 author: "Dr. Manoj C. Patil"
 date: "`r Sys.Date()`"
 output:
+  pdf_document:
+    toc: false
   html_document:
     toc: true
     toc_depth: 3
@@ -233,6 +235,134 @@ satisfy the following properties.
   hypercube densely rather than falling on a small number of
   parallel hyperplanes (a defect examined in detail below for the
   RANDU generator).
+
+## Criteria for the Selection of a Random Number Generator
+
+The properties above describe what an *ideal* generator looks like in
+the abstract; in practice, a statistician must choose one specific
+generator, from several candidates, for a specific piece of software
+or a specific simulation study. This choice is guided by a further set
+of practical selection criteria, which translate the abstract
+properties into concrete, checkable requirements.
+
+- **Period adequate to the application.** The relevant period
+  requirement is not the size of a single sample, but the *total*
+  number of variates the generator will ever be asked to produce over
+  the entire lifetime of the application, including every run of every
+  simulation that reuses the same generator; a generator with period
+  $2^{31}$ may be entirely adequate for a single classroom exercise yet
+  hopelessly inadequate for a large-scale production Monte Carlo
+  pipeline consuming trillions of draws.
+
+  *Numerical illustration.* A Monte Carlo study running $2000$
+  independent replications, each consuming $n=10^5$ uniform draws,
+  uses $2000\times10^5=2\times10^8$ draws in total. A generator with
+  period $2^{16}=65536$ would then repeat its entire cycle roughly
+  $2\times10^8/65536\approx3052$ times over the course of this single
+  study — far too short to be trustworthy — whereas a generator with
+  period $2^{31}\approx2.1\times10^9$ comfortably covers the same
+  study more than ten times over without repeating.
+
+- **Demonstrated statistical quality.** The generator should have
+  passed, or be verifiably capable of passing, the uniformity and
+  independence test battery of Unit 3.2, including tests applied to
+  $k$-tuples of consecutive outputs for every $k$ relevant to the
+  application (multivariate simulation and Markov chain Monte Carlo
+  methods draw on far higher-dimensional structure than a simple
+  univariate simulation does, and a generator adequate for the latter
+  can fail badly for the former, exactly as the RANDU example
+  illustrates for $k=3$).
+
+  *Numerical illustration.* Applying the Chi-square goodness-of-fit
+  test of Unit 3.2 to $n=2000$ values from R's default generator
+  typically returns a statistic close to its expected value of $k-1$
+  degrees of freedom and a $p$-value well above $0.05$; a generator
+  worth selecting should behave this way routinely, not merely on a
+  single lucky sample, whereas RANDU returns comparably unremarkable
+  $p$-values for this same univariate test even though it fails
+  badly once triples of outputs are examined (Unit 3.1, RANDU
+  discussion).
+
+- **Computational efficiency.** The number of arithmetic operations
+  needed per generated value should be small enough that generating
+  the volumes of data a modern simulation study requires does not
+  itself become the computational bottleneck.
+
+  *Numerical illustration.* A single LCG step
+  $X_{n+1}=(aX_n+c)\bmod m$ costs about $3$ arithmetic operations (one
+  multiplication, one addition, one modulo reduction), so generating
+  $10^9$ values costs roughly $3\times10^9$ operations; a more
+  elaborate generator requiring, say, $50$ operations per value would
+  cost $5\times10^{10}$ operations for the same task — more than
+  fifteen times slower for an identical sample size.
+
+- **Reproducibility and portability.** A stored seed should
+  reconstruct an identical sequence at a later time and on different
+  hardware or software, which is essential for debugging, for peer
+  review, and for regulatory or scientific reproducibility standards.
+
+  *Numerical illustration.* In R, the command `set.seed(42)` followed
+  by `runif(3)` must return the identical three values
+  $0.9148060,\ 0.9370754,\ 0.2861395$ every time it is run, on any
+  machine, for any given version of R; if a colleague's machine
+  produces different values from the same seed and code, the
+  simulation pipeline is not reproducible and something in the setup
+  (R version, package version, or generator kind) differs.
+
+- **Support for independent parallel streams.** Large-scale simulation
+  is now routinely distributed across many processors; a generator
+  intended for such use should admit a documented method (such as
+  parameter blocks, jump-ahead formulas, or distinct validated seeds)
+  for producing many long, mutually independent sub-streams, rather
+  than relying on ad hoc re-seeding of a single stream.
+
+  *Numerical illustration.* L'Ecuyer's combined multiple recursive
+  generator MRG32k3a has period approximately $3.1\times10^{57}$ and
+  a documented jump-ahead formula that advances the state by
+  $2^{127}\approx1.7\times10^{38}$ steps; partitioning it this way
+  still leaves room for more than $10^{19}$ non-overlapping streams,
+  each individually longer than any simulation could plausibly
+  exhaust, comfortably covering even a simulation distributed across
+  millions of processor cores.
+
+- **A published, independently verified track record.** All else being
+  comparable, an established generator whose properties have been
+  derived and tested in the peer-reviewed literature (for example, the
+  Mersenne Twister, used as R's default, or L'Ecuyer's combined
+  multiple recursive generators) should be preferred over a novel or
+  informally constructed generator whose long-run behaviour has not
+  been independently scrutinized.
+
+  *Numerical illustration.* RANDU was, for a period, a *de facto*
+  standard generator, yet its defect became apparent only once
+  independent researchers examined triples of its output and found
+  that all $2^{31}$ possible triples collapse onto just $15$ parallel
+  planes in the unit cube (Unit 3.1) — a defect that widespread prior
+  use had not caught, and that a documented, independently repeated
+  testing history is specifically meant to surface before a generator
+  is trusted at scale.
+
+- **Fitness to the specific purpose.** The criteria above are
+  calibrated to *statistical* simulation. Cryptographic applications
+  impose a categorically stronger requirement — unpredictability of
+  future outputs even to an adversary who has observed many past
+  outputs and knows the generating algorithm — which no congruential
+  generator satisfies, however long its period or however well it
+  performs on the tests of Unit 3.2; selecting a generator therefore
+  always begins with identifying which of these two very different
+  problems is actually being solved.
+
+  *Numerical illustration.* For the mixed LCG of the worked example in
+  Section 4 ($a=5$, $c=3$, $m=16$), knowing only the single value
+  $X_5=10$ and the (public, hard-coded) parameters lets an observer
+  compute every future value with certainty:
+  $X_6=(5\times10+3)\bmod16=5$, $X_7=(5\times5+3)\bmod16=12$,
+  $X_8=(5\times12+3)\bmod16=15$, and so on indefinitely. A
+  cryptographically secure generator must resist exactly this kind of
+  prediction even when its algorithm is public; no congruential
+  generator does, which is why one is never used for key generation or
+  other security-critical randomness, regardless of its period or its
+  performance on Unit 3.2's statistical tests.
 
 # Theorems
 

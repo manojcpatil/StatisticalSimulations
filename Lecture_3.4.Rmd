@@ -1,0 +1,182 @@
+---
+title: "Lecture 3.4: The Acceptance-Rejection Method"
+author: "Dr. Manoj C. Patil"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.align = "center")
+```
+
+## Motivation
+
+The inverse transformation method of Lecture 3.3 is elegant but has a
+real limitation: it needs the quantile function $F_X^{-1}$, and many
+important distributions — the Gamma distribution with non-integer
+shape, the standard Normal, most Bayesian posterior densities — have
+no closed-form quantile function at all. Numerically inverting the
+cdf at every single draw is possible but slow and can be delicate.
+The acceptance-rejection method sidesteps the problem entirely: it
+needs no quantile function whatsoever, only the ability to *evaluate*
+the target density (even up to an unknown constant) and to sample
+from some other, more convenient distribution. The idea originates
+with von Neumann's unpublished 1947 note on Monte Carlo methods for
+the Manhattan Project (von Neumann, 1951).
+
+## Intuition
+
+Picture the graph of the target density $f$, sitting entirely beneath
+the graph of some scaled *proposal* density $Mg(x)$, where $g$ is easy
+to sample from and $M\ge1$ is large enough that $Mg$ never dips below
+$f$. Suppose it is possible to scatter points uniformly at random in
+the two-dimensional region lying *under* the curve $Mg$. Among these
+scattered points, the ones that happen to also fall under the lower
+curve $f$ are, geometrically, uniformly scattered under $f$ — and a
+point picked uniformly from the region under a density curve has, as
+its horizontal coordinate, precisely a random draw from that density.
+Points falling above $f$ (but still under $Mg$) are simply thrown
+away; the points that survive are exact draws from $f$, with no
+approximation involved.
+
+Turning this picture into an algorithm requires a practical way to
+scatter points under $Mg$: draw the horizontal coordinate $Y$ from $g$
+itself, then draw the vertical coordinate uniformly between $0$ and
+$Mg(Y)$. This is equivalent to drawing an independent
+$U\sim\text{Uniform}(0,1)$ and accepting the point exactly when
+$U\le f(Y)/(Mg(Y))$ — a single numerical comparison, with no
+reference to areas or integrals needed while the algorithm is
+actually running.
+
+## Setup
+
+**Definition 4.1.** Let $f$ be a target density and $g$ a *proposal*
+density from which sampling is easy, with a constant $M\ge1$ such that
+
+$$
+f(x)\le Mg(x) \qquad \text{for every } x.
+$$
+
+Draw $Y\sim g$ and $U\sim\text{Uniform}(0,1)$ independently; **accept**
+$X=Y$ if $U\le f(Y)/(Mg(Y))$, otherwise discard both and repeat.
+
+## Correctness
+
+**Theorem 4.1.** The accepted variate $X$ has density exactly $f$, and
+each trial is accepted with probability $1/M$.
+
+*Proof.* Conditional on $Y=y$, the acceptance probability is
+$f(y)/(Mg(y))$, a number in $[0,1]$ because of the bound
+$f\le Mg$ assumed in Definition 4.1. Averaging this acceptance
+probability over the distribution of $Y$ gives the unconditional
+probability that any single trial succeeds:
+
+$$
+P(\text{accept}) = \int \frac{f(y)}{Mg(y)}\,g(y)\,dy = \frac1M\int f(y)\,dy = \frac1M,
+$$
+
+using $\int f(y)\,dy=1$ since $f$ is a density. This proves the second
+claim. For the first claim, fix any $x$ and compute the probability
+that a trial *both* has $Y\le x$ *and* is accepted:
+
+$$
+P(Y\le x,\ \text{accept}) = \int_{-\infty}^x \frac{f(y)}{Mg(y)}\,g(y)\,dy
+= \frac{F(x)}{M},
+$$
+
+where $F$ is the cdf corresponding to $f$. By the definition of
+conditional probability, the cdf of the *accepted* value $X$ is
+
+$$
+P(X\le x)=P(Y\le x\mid\text{accept}) = \frac{P(Y\le x,\ \text{accept})}{P(\text{accept})}=\frac{F(x)/M}{1/M}=F(x).
+$$
+
+Since this holds for every $x$, $X$ has cdf $F$, i.e. density $f$
+exactly — not approximately, and regardless of how loosely or tightly
+the envelope $Mg$ was chosen (as long as $f\le Mg$ holds everywhere).
+$\blacksquare$
+
+**Corollary.** Because each trial is accepted independently with
+probability $1/M$, the number of trials needed to obtain one accepted
+value follows a Geometric$(1/M)$ distribution, with mean exactly $M$.
+This is the reason the constant $M$ is worth minimizing: it is
+literally the average number of candidates that must be generated and
+discarded for every one that is kept.
+
+**Worked example.** Let $f(x)=6x(1-x)$ on $(0,1)$ (a Beta$(2,2)$
+density, with maximum value $1.5$ at $x=0.5$), and take $g$ to be the
+Uniform$(0,1)$ density with $M=1.5$. For a candidate $y=0.9$,
+$f(0.9)=6(0.9)(0.1)=0.54$ and $Mg(0.9)=1.5$, so the acceptance ratio
+is $0.54/1.5=0.36$. A draw $u=0.5$ exceeds $0.36$, so this candidate
+is **rejected**; a draw $u=0.2$ does not exceed $0.36$, so the same
+candidate would be **accepted**. Note that $y=0.9$ lies far from the
+density's peak at $0.5$, which is exactly why its acceptance ratio of
+$0.36$ is well below $1$ — candidates near the peak of $f$ are
+accepted far more readily than candidates in the tails.
+
+```{r ar-plot, fig.width=5, fig.height=3.2, fig.cap="Acceptance-rejection for f(x) = 6x(1-x) using a Uniform(0,1) envelope, M = 1.5; accepted points (red) fall under f, rejected points (grey) lie above it."}
+set.seed(1)
+n <- 400
+y <- runif(n); v <- runif(n, 0, 1.5)
+f <- 6 * y * (1 - y)
+acc <- v <= f
+x <- seq(0, 1, length.out = 200)
+plot(x, 6 * x * (1 - x), type = "l", col = "steelblue", lwd = 2,
+     ylim = c(0, 1.5), xlab = "x", ylab = "height")
+abline(h = 1.5, col = "darkorange", lwd = 2)
+points(y[!acc], v[!acc], pch = 16, cex = 0.4, col = "grey70")
+points(y[acc], v[acc], pch = 16, cex = 0.4, col = "firebrick")
+```
+
+## Choice of $M$ and Exponential Tilting
+
+By the corollary above, the average computational cost per accepted
+value is exactly $M$, so the natural design goal is to make $M$ as
+small as possible. The smallest valid constant is
+$M^{*}=\sup_x f(x)/g(x)$; achieving a finite $M^{*}$ at all requires
+$g$'s support and tails to be at least as generous as $f$'s — for
+instance, a Normal proposal can never bound a Cauchy target, because
+the Cauchy density decays far more slowly than the Normal density does
+in the tails, so the ratio $f(x)/g(x)$ grows without bound.
+
+**Exponential tilting** is a systematic way to build a good proposal
+when the region of interest is a distribution's tail. It chooses a
+proposal from the family $g_\theta(x)\propto e^{\theta x}h(x)$, for
+some convenient base density $h$, and tunes the "tilt" $\theta$ so
+that $g_\theta$ concentrates its mass exactly where the target region
+lies. As a concrete instance, to sample the standard Normal tail
+$\{Z>a\}$ efficiently for large $a$, take $h$ to be the Exponential
+density shifted to start at $a$, with rate $\theta=a$; a short
+calculation (completing the square in the exponent of the Normal
+density) shows the resulting bounding constant is
+
+$$
+M^{*}=\frac{\varphi(a)}{a\,Q(a)}, \qquad Q(a)=P(Z>a),
+$$
+
+and by the classical Mills' ratio approximation $Q(a)\sim\varphi(a)/a$
+for large $a$, this constant satisfies $M^{*}\to1$ as $a\to\infty$.
+In words: the tilted method becomes *more* efficient the further out
+into the tail one simulates, which is the exact opposite of naive
+sampling from the untilted Normal distribution and discarding values
+below the threshold — an approach whose acceptance probability $Q(a)$
+shrinks toward zero as $a$ grows, making it hopelessly wasteful for
+exactly the extreme, rare events that are often of the greatest
+practical interest.
+
+**Numerical illustration.** At threshold $a=2$, $\varphi(2)=0.05399$
+and $Q(2)=P(Z>2)=0.02275$, giving
+$M^{*}=0.05399/(2\times0.02275)=1.187$, so the tilted method accepts a
+candidate with probability $1/M^{*}\approx0.843$. The naive method —
+drawing an ordinary standard Normal value and keeping it only if it
+exceeds $2$ — accepts with probability $Q(2)=0.02275$ directly. The
+tilted method is therefore roughly $0.843/0.02275\approx37$ times more
+efficient at this threshold alone, and the gap widens further as $a$
+increases.
+
+## References
+
+von Neumann, J. (1951). Various techniques used in connection with
+random digits. In *Monte Carlo Method* (National Bureau of Standards
+Applied Mathematics Series 12, pp. 36–38). U.S. Government Printing
+Office.

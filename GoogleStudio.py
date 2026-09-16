@@ -1,0 +1,135 @@
+import os
+import time
+import random
+from google import genai
+from google.genai import types
+from google.genai.errors import APIError
+
+# Initialize the modern GenAI Client
+# Ensure your environment variable is set: export GEMINI_API_KEY="AQ.Ab8RN6JBI5ggB2x8zSR4uwfnNd5ZzERgnBETL1HtfokWBcKsUw"
+client = genai.Client(api_key="AQ.Ab8RN6JBI5ggB2x8zSR4uwfnNd5ZzERgnBETL1HtfokWBcKsUw")
+
+# Define the remaining topics from your syllabus
+syllabus_topics = {
+    "03-02_Testing_of_Random_Number_Generators": """
+    Unit 3.2: Testing of Random Number Generators.
+    Include Uniformity Tests: Chi-square Goodness-of-Fit Test, Kolmogorov-Smirnov Test, Digit Frequency Test.
+    Include Independence Tests: Runs Test, Gap Test, Poker Test, Serial Correlation Test.
+    """,
+    "03-03_Inverse_Transformation_Method": """
+    Unit 3.3: Inverse Transformation Method.
+    Include Theory, Quantile Function, Properties, Distribution of Quantile Function, Algorithms, Discrete distributions, Continuous distributions.
+    """,
+    "03-04_Acceptance_Rejection_Method": """
+    Unit 3.4: Acceptance-Rejection Method.
+    Include Theory, Conditional Distribution, Choice of M, Exponential Tilting, Algorithms.
+    """,
+    "03-05_Distributional_Relationships": """
+    Unit 3.5: Generation Using Distributional Relationships.
+    Include Composition Method, Convolution Method, Mixture Distributions, Chi-square, t Distribution, F Distribution.
+    """,
+    "03-06_Multivariate_Random_Variable_Generation": """
+    Unit 3.6: Multivariate Random Variable Generation.
+    Include Bivariate distributions, Multivariate distributions, Conditional distributions.
+    """
+}
+
+# The strict system instruction to enforce your structural guidelines
+system_instruction = """
+You are a university professor teaching M.Sc. Statistics. Your task is to write independent, fully compiled R Markdown (.Rmd) files for the course "Statistical Computing using R". 
+
+For any given syllabus topic provided by the user, you must output a complete graduate-level lecture note that adheres strictly to these instructions:
+
+1. YAML Header: Start exactly with this format:
+---
+title: "Unit 3.X: [Topic Name]"
+author: "M.Sc. Statistics Faculty"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: hide
+    theme: cosmo
+---
+
+2. Teaching Philosophy Sequence: You must structure the document using these EXACT headers in this exact chronological order. Never skip or rearrange them:
+# Learning Objectives
+# Prerequisites
+# Introduction (Include Motivation, Historical Background, Practical Importance)
+# Intuition
+# Formal Definitions (Use rigorous LaTeX equations)
+# Theorems (State, Proof, Remarks, Examples)
+# Mathematical Derivations (Show EVERY step; never skip algebra)
+# Algorithms (Purpose, Input, Output, Pseudo-code, Complexity, Flowchart description, Practical considerations)
+# R Programming (Tidy style, executable, commented)
+# Simulation Studies (Using tidyverse/ggplot2, illustrate theory and limits)
+# Graphs
+# Numerical Examples (Problem, Solution, Interpretation)
+# Applications
+# Advantages
+# Limitations
+# Practical Tips
+# Summary
+# Key Formulae
+# Key Terms (Glossary)
+# Exercises (10 Multiple Choice with solutions, 10 Short Answer, 10 Long Answer, 10 Programming Exercises, 2 Mini Projects)
+# References (APA Format)
+
+3. Code Rules: Every code block must include `set.seed(123)` and `library(tidyverse)`. Ensure blocks compile perfectly without errors.
+4. Tone: Mathematically rigorous, deeply explanatory, highly readable, avoiding generic AI-style introductory/concluding remarks outside of the markdown itself.
+"""
+
+def generate_with_retry(filename, topic_details, max_retries=5, base_delay=4):
+    """
+    Generates content using Gemini API with Exponential Backoff and Jitter 
+    to handle 429 (Rate Limit) errors gracefully.
+    """
+    attempt = 0
+    while attempt < max_retries:
+        try:
+            # gemini-2.5-pro handles structural layout and deep math perfectly
+            response = client.models.generate_content(
+                model='gemini-2.5-pro',
+                contents=f"Generate the complete Rmd file content for: {topic_details}",
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=0.2, # Lower temperature forces adherence to guidelines
+                )
+            )
+            
+            # Successfully got response, write to disk
+            with open(f"{filename}.Rmd", "w", encoding="utf-8") as file:
+                file.write(response.text)
+            print(f"✅ Successfully saved {filename}.Rmd")
+            return True
+
+        except APIError as e:
+            # Catch standard Gemini SDK API errors (e.g., HTTP 429)
+            attempt += 1
+            if attempt == max_retries:
+                print(f"❌ Failed to generate {filename}.Rmd after {max_retries} attempts. Error: {e}")
+                return False
+            
+            # Calculate backoff delay with random jitter to prevent concurrent thundering herds
+            delay = (base_delay ** attempt) + random.uniform(0, 2)
+            print(f"⚠️ Rate limit or API error detected code [{e.code}]. Retrying {filename} (Attempt {attempt}/{max_retries}) in {delay:.2f} seconds...")
+            time.sleep(delay)
+            
+        except Exception as e:
+            # Block errors that are structural (missing file permissions, etc.) and shouldn't be retried
+            print(f"❌ Non-API critical exception encountered for {filename}: {e}")
+            return False
+
+# Main Execution Loop
+for filename, topic_details in syllabus_topics.items():
+    print(f"🚀 Initializing generation for: {filename}...")
+    success = generate_with_retry(filename, topic_details)
+    
+    # Introduce a courtesy buffer delay between successful runs 
+    # to safeguard your Tokens Per Minute (TPM) limit
+    if success:
+        time.sleep(3) 
+
+print("\n🎉 Core execution pipeline completed.")

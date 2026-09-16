@@ -1,0 +1,171 @@
+---
+title: "Lecture 3.3: The Inverse Transformation Method"
+author: "Dr. Manoj C. Patil"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.align = "center")
+```
+
+## Motivation
+
+A generator, once verified as in Lectures 3.1–3.2, supplies a stream
+of Uniform$(0,1)$ values. Almost nothing in statistics actually needs
+a Uniform$(0,1)$ variable for its own sake — what is wanted is a
+variable from some *target* distribution: Exponential waiting times,
+Normal errors, Binomial counts. The question this lecture answers is
+how to convert one uniform stream into a stream from any prescribed
+distribution, using only the target's cumulative distribution
+function.
+
+## Intuition
+
+Picture the graph of a cumulative distribution function $F_X$, rising
+from $0$ to $1$ as $x$ increases. Choose a height $u$ between $0$ and
+$1$ on the vertical axis, draw a horizontal line across to where it
+meets the curve, and then drop straight down to the horizontal axis:
+the point reached is a value $x$ with $F_X(x)=u$. If the height $u$ is
+itself chosen uniformly at random on $(0,1)$, then the horizontal
+position where the line meets the curve is *not* uniform — it is
+distributed exactly as $X$ itself. This is because $F_X$ stretches
+out the regions where $X$'s density is small and compresses the
+regions where it is large, so that a uniform sweep up the vertical
+axis reproduces $X$'s own probability weighting on the horizontal
+axis. Generating $X$ therefore reduces to two steps: draw a uniform
+height $U$, and read off the corresponding position on the horizontal
+axis — which is precisely $F_X^{-1}(U)$.
+
+```{r inv-plot, fig.width=5, fig.height=3.2, fig.cap="Reading the inverse cdf: a draw u = 0.75 on the vertical axis maps, through F, to the simulated value x."}
+x <- seq(-4, 4, length.out = 400)
+u0 <- 0.75; x0 <- qnorm(u0)
+plot(x, pnorm(x), type = "l", col = "steelblue", lwd = 2,
+     xlab = "x", ylab = expression(F[X](x)))
+segments(-4, u0, x0, u0, lty = 2, col = "darkred")
+segments(x0, 0, x0, u0, lty = 2, col = "darkred")
+```
+
+## The Quantile Function
+
+The picture above is unambiguous whenever $F_X$ is continuous and
+strictly increasing, since then it has an ordinary inverse function.
+The definition below extends this idea so that it makes sense even
+when $F_X$ has jumps (as for a discrete random variable) or flat
+stretches, situations in which no ordinary inverse function exists.
+
+**Definition 3.1.** For a cdf $F_X$, the *quantile function*
+(generalized inverse) is
+
+$$
+F_X^{-1}(u) = \inf\{x\in\mathbb R : F_X(x)\ge u\}, \qquad 0<u<1,
+$$
+
+that is, the smallest $x$ at which the cdf has climbed up to at least
+height $u$. It is non-decreasing (climbing $F_X$ higher never requires
+a smaller $x$) and left-continuous, and it satisfies the
+**compatibility relation**
+
+$$
+F_X^{-1}(u)\le x \iff u\le F_X(x), \qquad x\in\mathbb R,\ u\in(0,1),
+$$
+
+which holds regardless of whether $F_X$ is continuous, discrete, or a
+mixture of both, and is the single algebraic fact both theorems below
+are built from.
+
+**Numerical illustration.** For $X\sim\text{Bernoulli}(0.4)$,
+$F_X(0)=0.6$ and $F_X(1)=1$, so $F_X^{-1}(0.3)=0$ and
+$F_X^{-1}(0.8)=1$ (the smallest $x$ at which $F_X$ reaches at least
+that height). Since $0.3<0.8$ gives $F_X^{-1}(0.3)=0\le1=F_X^{-1}(0.8)$,
+this concrete pair already confirms the non-decreasing property
+claimed above.
+
+## Two Theorems
+
+**Theorem 3.1 (Probability Integral Transformation).** If $X$ is
+continuous with cdf $F_X$, then $U=F_X(X)\sim\text{Uniform}(0,1)$.
+
+*Proof.* Fix $u\in(0,1)$. Using the compatibility relation with the
+roles of $x$ and $u$ read appropriately,
+
+$$
+P(U\le u)=P(F_X(X)\le u)=P(X\le F_X^{-1}(u))=F_X\bigl(F_X^{-1}(u)\bigr)=u,
+$$
+
+where the second equality is the compatibility relation itself, and
+the final equality holds because $F_X$ is continuous, so applying
+$F_X$ to its own generalized inverse returns the original argument
+exactly. Since $P(U\le u)=u$ for every $u\in(0,1)$, this is precisely
+the Uniform$(0,1)$ cdf, so $U\sim\text{Uniform}(0,1)$. $\blacksquare$
+
+This first theorem explains *why* the method works, but it runs in
+the wrong direction for simulation — it starts from $X$ and produces a
+uniform variable, whereas generation needs to start from a uniform
+variable and produce $X$. The next theorem is the converse, and is the
+one actually used to generate variates.
+
+**Theorem 3.2 (Inverse Transformation).** If $U\sim\text{Uniform}(0,1)$
+and $F_X$ is any cdf, then $X=F_X^{-1}(U)$ has cdf $F_X$ — with no
+continuity assumption on $F_X$ at all.
+
+*Proof.* Fix $x\in\mathbb R$. By the compatibility relation,
+
+$$
+P(X\le x)=P\bigl(F_X^{-1}(U)\le x\bigr)=P\bigl(U\le F_X(x)\bigr)=F_X(x),
+$$
+
+the last equality using $U\sim\text{Uniform}(0,1)$, whose cdf is the
+identity function on $(0,1)$, together with the fact that $F_X(x)$
+itself always lies in $[0,1]$. Since $P(X\le x)=F_X(x)$ for *every*
+$x$, by definition $X$ has cdf $F_X$. Notice that continuity of $F_X$
+was never used — the compatibility relation, and hence this proof,
+is valid whether $F_X$ jumps, is flat, or is smooth. $\blacksquare$
+
+## Applying the Theorem: Continuous and Discrete Cases
+
+**Continuous case.** When $F_X$ is continuous and strictly increasing,
+$F_X^{-1}(u)$ is found by solving the single equation $F_X(x)=u$
+algebraically for $x$. For example, if $X\sim\text{Exponential}
+(\lambda)$, then $F_X(x)=1-e^{-\lambda x}$ for $x>0$; setting this
+equal to $u$ and solving gives
+
+$$
+1-e^{-\lambda x}=u \;\Longrightarrow\; e^{-\lambda x}=1-u \;\Longrightarrow\;
+F_X^{-1}(u)=-\frac{1}{\lambda}\log(1-u).
+$$
+
+**Worked example.** For the density $f(x)=3x^2$ on $(0,1)$, integrating
+gives $F_X(x)=x^3$, so $F_X^{-1}(u)=u^{1/3}$. A uniform draw
+$u=0.729$ therefore produces $x=0.729^{1/3}=0.9$: this value of $u$,
+read as "$72.9\%$ of the probability mass lies at or below $x$," maps
+to the point $x=0.9$ at which exactly that much mass has accumulated,
+since $F_X(0.9)=0.9^3=0.729$ checks out exactly.
+
+**Discrete case.** When $X$ is discrete with support
+$x_1<x_2<x_3<\cdots$, there is generally no algebraic shortcut; the
+compatibility relation specializes to
+
+$$
+F_X^{-1}(u)=x_i \quad\text{whenever}\quad F_X(x_{i-1})<u\le F_X(x_i),
+$$
+
+so generating $X$ means *searching* a table of cumulative
+probabilities for the first value at which the cumulative probability
+reaches or exceeds $u$, rather than inverting a formula.
+
+**Worked example.** For $X\sim\text{Bernoulli}(p=0.4)$,
+$F_X(0)=1-p=0.6$ and $F_X(1)=1$. A draw $u=0.55$ satisfies
+$u\le F_X(0)=0.6$, so $X=0$; a draw $u=0.70$ satisfies $u>0.6$, so
+$X=1$. In general, the sub-interval of $(0,1)$ mapped to each outcome
+has length exactly equal to that outcome's probability — length $0.6$
+for the outcome $0$ and length $0.4$ for the outcome $1$ — which is
+exactly why the method reproduces the correct distribution. Devroye
+(1986) catalogues quantile functions, in both closed and searchable
+form, for essentially every standard discrete and continuous
+distribution.
+
+## References
+
+Devroye, L. (1986). *Non-uniform random variate generation*.
+Springer-Verlag.

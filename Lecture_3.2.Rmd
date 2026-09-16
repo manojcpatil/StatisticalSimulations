@@ -1,0 +1,281 @@
+---
+title: "Lecture 3.2: Testing of Random Number Generators"
+author: "Dr. Manoj C. Patil"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.align = "center")
+```
+
+## Motivation and Intuition
+
+Lecture 3.1 showed that a generator can achieve the maximal possible
+period yet still hide serious defects, as RANDU's collapse onto
+parallel planes demonstrated. Since the arithmetic structure of a
+generator does not, by itself, certify statistical quality, the only
+remaining option is to examine the generator's *output* directly and
+ask whether it is statistically distinguishable from a genuine
+Uniform$(0,1)$ sample. Two quite different things can go wrong. First,
+the individual values might not be spread evenly over $[0,1]$ — this
+is a failure of **uniformity**. Second, even if each value looks fine
+in isolation, the *order* in which they appear might not be random —
+this is a failure of **independence**, and it is exactly the kind of
+defect that trapped RANDU. This lecture develops one representative
+test of each kind in full, together with brief descriptions of three
+further independence tests.
+
+## The Testing Problem
+
+Given output $U_1,\dots,U_n$ of a generator, every test in this
+lecture addresses the same joint null hypothesis:
+
+$$
+H_0:\quad U_1,\dots,U_n \overset{\text{iid}}{\sim}\text{Uniform}(0,1).
+$$
+
+Rejecting $H_0$ signals that the output can be statistically
+distinguished from an ideal uniform sample; because the alternative is
+left completely unspecified, no single test can reveal *which* aspect
+of $H_0$ has failed, which is exactly why a battery of complementary
+tests — some sensitive to shape, others to sequence — is used in
+practice rather than any one test alone.
+
+## Uniformity: The Chi-square Test
+
+The most direct way to check whether values are spread evenly is to
+bin them and compare the observed counts to what evenness would
+predict. Partition $[0,1]$ into $k$ equal bins with observed counts
+$O_i$. Under $H_0$, each of the $n$ values falls into each bin with
+probability $1/k$, so $(O_1,\dots,O_k)\sim\text{Multinomial}(n;1/k,
+\dots,1/k)$, and the discrepancy between observed and expected counts
+is summarized by
+
+$$
+\chi^2=\sum_{i=1}^k\frac{(O_i-n/k)^2}{n/k}.
+$$
+
+**Theorem 2.1.** Under $H_0$, $\chi^2 \xrightarrow{d} \chi^2_{k-1}$ as
+$n\to\infty$ with $k$ fixed.
+
+*Proof.* By the multivariate central limit theorem applied to the
+multinomial counts, the vector of standardized deviations converges,
+$n^{-1/2}(O_i-n/k)_{i=1}^k \xrightarrow{d} N_k(0,\Sigma)$, with
+covariance matrix $\Sigma=\tfrac1k I_k - \tfrac1{k^2}\mathbf{11}'$.
+This matrix is *singular* — it annihilates the all-ones vector
+$\mathbf 1$, since $\Sigma\mathbf1 = \tfrac1k\mathbf1 -
+\tfrac1{k^2}\cdot k\cdot\mathbf1=\mathbf 0$ — and this singularity is
+not an accident: it reflects the fact that the counts $O_i$ are not
+free to vary independently, since they must always sum to the fixed
+total $n$. Losing one "degree of freedom" to this constraint is
+exactly why the limiting chi-square distribution below has $k-1$, not
+$k$, degrees of freedom.
+
+Writing $\chi^2$ as the quadratic form
+$n^{-1}(O-n\mathbf p)'D^{-1}(O-n\mathbf p)$, with $D=\text{diag}(\mathbf
+p)$ and $\mathbf p=(1/k,\dots,1/k)'$, one can check directly that the
+matrix $D^{-1}\Sigma$ is idempotent (that is, $(D^{-1}\Sigma)^2 =
+D^{-1}\Sigma$) with trace exactly $k-1$. A standard fact about
+quadratic forms in a (possibly singular) multivariate Normal vector
+states that if $V\sim N_k(0,\Sigma)$ and $D^{-1}\Sigma$ is idempotent
+of rank $r$, then $V'D^{-1}V\sim\chi^2_r$; applying this fact to the
+limiting Normal vector above, with $r=k-1$, gives the stated
+convergence. $\blacksquare$
+
+**Worked example.** Suppose $n=40$ generated values are placed into
+$k=4$ equal bins with observed counts $O=(8,12,11,9)$. The expected
+count per bin is $E=40/4=10$, so
+
+$$
+\chi^2=\frac{(8-10)^2}{10}+\frac{(12-10)^2}{10}+\frac{(11-10)^2}{10}+\frac{(9-10)^2}{10}=\frac{4+4+1+1}{10}=1.0.
+$$
+
+With $3$ degrees of freedom, the $5\%$ critical value is $7.815$;
+since $1.0$ is far below this threshold, there is no evidence against
+uniformity — the observed counts are well within the spread expected
+by chance alone.
+
+## Uniformity: The Kolmogorov–Smirnov Test
+
+A drawback of the chi-square test is that it requires an arbitrary
+choice of bins, and can be insensitive to smooth departures from
+uniformity that happen not to line up with the bin edges. The
+Kolmogorov–Smirnov test avoids binning entirely by comparing the
+*entire* empirical distribution function to the target directly. With
+empirical cdf $F_n(x)=n^{-1}\sum_i\mathbf1\{U_i\le x\}$, the statistic
+
+$$
+D_n=\sup_x|F_n(x)-x|
+$$
+
+measures the single largest vertical gap between the step function
+$F_n$ and the straight line $F(x)=x$. Because $F_n$ only changes value
+at the observed order statistics $U_{(1)}\le\cdots\le U_{(n)}$, the
+supremum must be attained at one of these jump points (approached
+either from the left or from the right), giving the computable form
+
+$$
+D_n = \max_{1\le i\le n}\max\Bigl\{\tfrac{i}{n}-U_{(i)},\ U_{(i)}-\tfrac{i-1}{n}\Bigr\}.
+$$
+
+Kolmogorov (1933) showed that $\sqrt n\,D_n$ converges to a specific
+limiting distribution under $H_0$; the argument requires the theory of
+weak convergence of the empirical process to a Brownian bridge, a
+substantially deeper tool than anything used elsewhere in this
+lecture, and the proof is omitted.
+
+**Worked example.** For the small ordered sample $u_{(1)},\dots,
+u_{(5)}=0.10,0.35,0.42,0.68,0.90$, compute both quantities at each
+$i$:
+
+| $i$ | $u_{(i)}$ | $i/5-u_{(i)}$ | $u_{(i)}-(i-1)/5$ |
+|---|---|---|---|
+| 1 | 0.10 | 0.10 | 0.10 |
+| 2 | 0.35 | 0.05 | 0.15 |
+| 3 | 0.42 | 0.18 | 0.02 |
+| 4 | 0.68 | 0.12 | 0.08 |
+| 5 | 0.90 | 0.10 | 0.10 |
+
+The largest entry anywhere in the table is $0.18$, attained at $i=3$,
+so $D_5=0.18$: the third order statistic falls short of its "expected"
+position $3/5=0.6$ by this amount.
+
+## Independence: The Runs Test
+
+Uniformity tests say nothing about order. A **run** is a maximal
+increasing or decreasing block in the sequence; intuitively, if the
+values are independent, the sequence should switch between rising and
+falling reasonably often, but not with perfect, suspicious regularity.
+
+**Theorem 2.2.** Under $H_0$ (with a continuous distribution, so ties
+have probability zero), the number of runs $R$ satisfies
+$E(R)=(2n-1)/3$.
+
+*Proof.* Call an interior position $i\in\{2,\dots,n-1\}$ a *turning
+point* if $U_i$ is a local maximum or local minimum relative to its
+two neighbours $U_{i-1}$ and $U_{i+1}$. Because $U_{i-1},U_i,U_{i+1}$
+are three continuous, exchangeable random variables, all $3!=6$
+orderings of their relative sizes are equally likely; exactly $4$ of
+these $6$ orderings place $U_i$ either largest or smallest of the
+three (i.e. at an extreme), so $P(\text{turning point at }i)=4/6=2/3$.
+Summing this probability over the $n-2$ interior positions, the
+expected number of turning points is $E(T)=(n-2)\cdot\tfrac23$.
+Finally, every turning point marks the boundary between one run and
+the next, so the number of runs is always exactly one more than the
+number of turning points, $R=T+1$. Combining,
+
+$$
+E(R)=E(T)+1=\frac{2n-4}{3}+1=\frac{2n-1}{3}.
+$$
+$\blacksquare$
+
+A more elaborate version of the same turning-point argument, tracking
+how nearby turning-point indicators are correlated with one another,
+gives $\operatorname{Var}(R)=(16n-29)/90$; the standardized statistic
+$Z=(R-E(R))/\sqrt{\operatorname{Var}(R)}$ is then approximately
+$N(0,1)$ for large $n$, allowing a formal test.
+
+**Worked example.** For the ten values
+$0.51,0.62,0.40,0.85,0.33,0.71,0.29,0.58,0.44,0.77$, the signs of
+consecutive differences are $+,-,+,-,+,-,+,-,+$: the sequence switches
+direction at *every single step*, so every sign is its own run,
+giving $R=9$. With $n=10$, $E(R)=19/3=6.33$ and
+$\operatorname{Var}(R)=131/90=1.456$, so
+
+$$
+Z=\frac{9-6.33}{\sqrt{1.456}}=2.21.
+$$
+
+Since $|Z|=2.21>1.96$, this is significant at the $5\%$ level: the
+sequence alternates far more regularly than genuine randomness would
+produce (recall that under $H_0$ a turning point occurs with
+probability $2/3$ at each step, not with certainty), so this pattern
+is exactly the kind of excessive negative dependence the runs test is
+designed to catch.
+
+```{r runs-plot, fig.width=5, fig.height=3.2, fig.cap="Simulated distribution of the number of runs (n = 50) against its Normal approximation from Theorem 2.2."}
+count_runs <- function(u) {
+  s <- sign(diff(u)); s <- s[s != 0]
+  1 + sum(s[-1] != s[-length(s)])
+}
+set.seed(1)
+n <- 50
+r <- replicate(4000, count_runs(runif(n)))
+hist(r, breaks = seq(min(r) - 0.5, max(r) + 0.5, 1), freq = FALSE,
+     col = "steelblue", border = "white", main = "", xlab = "Number of runs R")
+curve(dnorm(x, mean = (2 * n - 1) / 3, sd = sqrt((16 * n - 29) / 90)),
+      add = TRUE, col = "darkred", lwd = 2)
+```
+
+## Three Further Independence Tests
+
+The gap, poker, and serial correlation tests below are classical, all
+traceable to Knuth's (1997) standard treatment of statistical tests
+for random sequences.
+
+- **Gap test.** Fix an interval $[\alpha,\beta]\subset[0,1]$ of
+  probability $p=\beta-\alpha$. Under $H_0$, the number of values
+  skipped between one visit to $[\alpha,\beta]$ and the next is
+  Geometric$(p)$ — this is simply the waiting-time distribution for a
+  Bernoulli$(p)$ "success" of landing in the interval. A chi-square
+  test comparing observed gap-length frequencies to this geometric law
+  reveals clustering (too many short gaps) or repulsion (too many long
+  gaps) relative to independence.
+
+  *Numerical illustration.* With $[\alpha,\beta]=[0,0.5)$, so $p=0.5$,
+  suppose a sequence hits this interval at positions $3$, $6$, and
+  $12$. The first gap skips the $2$ values at positions $4,5$, and the
+  second gap skips the $5$ values at positions $7,\dots,11$. Under
+  $H_0$, $P(\text{gap}=2)=(0.5)^2(0.5)=0.125$ and
+  $P(\text{gap}=5)=(0.5)^5(0.5)=0.015625$; a full test would compare
+  many such observed gap lengths, across a long sequence, to these
+  geometric probabilities using a chi-square statistic.
+
+- **Poker test.** Group $m$ consecutive decimal digits of each
+  generated value into a "hand" and classify it by its repeated-digit
+  pattern, exactly as one classifies a poker hand by rank. Under
+  $H_0$, elementary counting gives fixed probabilities for each
+  pattern (e.g. for $m=5$ digits: all different $0.3024$, one pair
+  $0.5040$, two pairs $0.1080$, three of a kind $0.0720$, full house
+  $0.0090$, four of a kind $0.0045$, five of a kind $0.0001$), and a
+  chi-square test compares the observed hand frequencies to these.
+
+  *Numerical illustration.* The value $u=0.42517$ has digits
+  $4,2,5,1,7$ — all different, the most likely hand, with probability
+  $0.3024$ under $H_0$. The value $u=0.33218$ has digits $3,3,2,1,8$ —
+  the digit $3$ repeats once, giving a "one pair" hand, with
+  probability $0.5040$ under $H_0$; a full poker test would classify
+  many such hands this way and compare the resulting frequency table
+  to these theoretical probabilities.
+
+- **Serial correlation.** The lag-$k$ sample autocorrelation $r_k$
+  measures the linear association between values $k$ steps apart;
+  under $H_0$ it satisfies $r_k\sqrt{n-k}\xrightarrow{d}N(0,1)$, so
+  values of $r_k$ far from zero (relative to $1/\sqrt{n-k}$) indicate
+  that successive (or $k$-apart) outputs are not behaving
+  independently.
+
+  *Numerical illustration.* For the eight values $0.2, 0.5, 0.3, 0.8,
+  0.4, 0.6, 0.1, 0.9$ (mean $\bar u=0.475$), the lag-$1$
+  autocorrelation works out to $r_1=-0.634$, and
+  $Z=r_1\sqrt{8-1}=-1.68$. Since $|Z|=1.68<1.96$, this particular
+  short sequence does not give significant evidence of lag-$1$
+  dependence at the $5\%$ level, even though $r_1=-0.634$ looks large
+  numerically — with only $n=8$ values, sample correlations are highly
+  variable under $H_0$, and the formal $Z$-test, not the raw
+  correlation, is what should be reported.
+
+Each of these targets a different notion of "structure," which is
+precisely why applying several of them together, as in the batteries
+used in practice, gives far more reliable protection than relying on
+any single test.
+
+## References
+
+Kolmogorov, A. N. (1933). Sulla determinazione empirica di una legge
+di distribuzione. *Giornale dell'Istituto Italiano degli Attuari*, 4,
+83–91.
+
+Knuth, D. E. (1997). *The art of computer programming, Volume 2:
+Seminumerical algorithms* (3rd ed.). Addison-Wesley.
