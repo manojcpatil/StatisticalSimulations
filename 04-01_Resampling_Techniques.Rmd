@@ -3,6 +3,8 @@ title: "Unit 4.1: Resampling Techniques"
 author: "Dr. Manoj C. Patil"
 date: "`r Sys.Date()`"
 output:
+  pdf_document:
+    toc: false
   html_document:
     toc: true
     toc_depth: 3
