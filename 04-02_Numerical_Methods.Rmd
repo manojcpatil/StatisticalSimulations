@@ -3,6 +3,9 @@ title: "Unit 4.2: Numerical Methods"
 author: "Dr. Manoj C. Patil"
 date: "`r Sys.Date()`"
 output:
+  pdf_document:
+    keep_tex: true
+    toc: false
   html_document:
     toc: true
     toc_depth: 3
@@ -653,6 +656,22 @@ Output: approximate integral
        S <- h/3 * ( f(x[0]) + 4*sum(f(x[odd i])) + 2*sum(f(x[even i, interior])) + f(x[n]) )
 5. Return T (or S)
 ```
+
+trapz=function(f,a,b,n){
+h=(b-a)/n
+ft=f(seq(a,b,by=h))
+trapz=(h/2)*(ft[1]+ft[n+1])+2*sum(ft[2:n])
+return(trapz)
+}
+
+f=function(x) {x^3 - x - 2}
+a=0
+b=1
+n=50
+trapz(f,a,b,n)
+
+
+
 
 **Flowchart description.** Start; partition $[a,b]$ into $n$ equal
 sub-intervals; evaluate $f$ at every node; combine the values with the
