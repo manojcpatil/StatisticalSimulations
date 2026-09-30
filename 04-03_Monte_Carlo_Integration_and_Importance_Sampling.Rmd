@@ -3,1221 +3,250 @@ title: "Unit 4.3: Monte Carlo Integration and Importance Sampling"
 author: "Dr. Manoj C. Patil"
 date: "`r Sys.Date()`"
 output:
+  pdf_document:
+    keep_tex: true
   html_document:
     toc: true
-    toc_depth: 3
     number_sections: true
-    code_folding: hide
     theme: cosmo
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(
-    echo = TRUE,
-    warning = FALSE,
-    message = FALSE,
-    fig.align = "center",
-    fig.width = 7,
-    fig.height = 4.5
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.align = "center", fig.width = 7, fig.height = 4)
+set.seed(123)
+```
+
+# Why Monte Carlo?
+
+Quadrature (Unit 4.2) puts points on a grid. In $d$ dimensions the grid
+needs (points per axis)$^d$ evaluations, which quickly becomes impossible.
+
+Monte Carlo uses **random points** instead. Its error is about
+$1/\sqrt n$ **no matter how many dimensions** the integral has.
+
+# Monte Carlo Integration
+
+## The idea
+
+An integral is an expectation, and an expectation is estimated by an
+average. If $X \sim f$:
+
+$$
+\theta = \int g(x) f(x)\,dx = E[g(X)]
+\quad\Longrightarrow\quad
+\hat\theta = \frac{1}{n}\sum_{i=1}^n g(X_i)
+$$
+
+Two special cases cover most problems:
+
+- **Integral on $[a,b]$:** $\int_a^b h(x)\,dx = (b-a)\,E[h(U)]$ with $U \sim \text{Uniform}(a,b)$.
+- **Probability:** $P(X \in A) = E[\mathbf 1_A(X)]$, which is the fraction of draws that land in $A$.
+
+## Method
+
+1. Draw $X_1,\dots,X_n$ from $f$.
+2. Compute $g(X_1),\dots,g(X_n)$.
+3. Estimate $\hat\theta$ as the mean of these values.
+4. Compute $\text{SE} = s_g/\sqrt n$, where $s_g$ is the sample standard deviation of the $g(X_i)$.
+5. Report the 95% confidence interval $\hat\theta \pm 1.96\,\text{SE}$.
+
+The estimator is unbiased. By the law of large numbers it is consistent,
+and by the central limit theorem the interval in step 5 is valid.
+
+## Example 1: an integral
+
+Estimate $\int_0^1 e^{-x}\,dx$. The true value is $1-e^{-1} = 0.6321$.
+
+```{r ex1}
+n <- 10000
+x <- runif(n)                 # random points on [0, 1]
+g <- exp(-x)
+
+est <- mean(g)
+se  <- sd(g) / sqrt(n)
+c(estimate = est, se = se, lower = est - 1.96 * se, upper = est + 1.96 * se,
+  truth = 1 - exp(-1))
+```
+
+The interval covers the true value. The next plot shows the estimate
+settling down as $n$ grows.
+
+```{r ex1-plot}
+n <- 5000
+g <- exp(-runif(n))
+running <- cumsum(g) / seq_len(n)
+
+plot(running, type = "l", col = "steelblue", xlab = "n", ylab = "Estimate",
+     main = "Monte Carlo estimate converging")
+abline(h = 1 - exp(-1), col = "red", lty = 2)
+```
+
+## Example 2: a probability
+
+Estimate $P(U_1 + U_2 > 1.5)$ for independent $U_1, U_2 \sim \text{Uniform}(0,1)$.
+Elementary geometry gives the true value $0.125$.
+
+```{r ex2}
+n <- 100000
+u1 <- runif(n)
+u2 <- runif(n)
+
+hit <- (u1 + u2) > 1.5        # TRUE/FALSE for each draw
+c(estimate = mean(hit), se = sd(hit) / sqrt(n), truth = 0.125)
+```
+
+# Importance Sampling
+
+## The problem
+
+Suppose $\theta = P(Z > 4)$ with $Z \sim N(0,1)$. The event is very rare,
+with probability about $3 \times 10^{-5}$. With 10,000 draws, plain Monte
+Carlo usually sees **no hits at all** and returns exactly 0.
+
+For a small probability $\theta$, the relative error of plain Monte Carlo is
+
+$$
+\frac{\text{SE}}{\theta} \approx \frac{1}{\sqrt{n\theta}},
+$$
+
+so you need $n \gg 1/\theta$ draws.
+
+## The idea
+
+Sample from a different density $p$ that visits the important region
+often. Then correct each draw with a **weight**:
+
+$$
+\hat\theta_{IS} = \frac{1}{n}\sum_{i=1}^n g(Y_i)\,w(Y_i),
+\qquad w(y)=\frac{f(y)}{p(y)}, \qquad Y_i \sim p
+$$
+
+This is still unbiased, because $E_p[g(Y)\,f(Y)/p(Y)] = \int g f\,dy = \theta$.
+The only requirement is that $p(y) > 0$ wherever $g(y)f(y) \neq 0$.
+
+## How to choose $p$
+
+The variance is smallest when $p \propto |g|\,f$. You can't sample from
+that exactly, because it needs the answer you are looking for. So the rule
+of thumb is to **pick $p$ shaped like $|g|f$**. For a tail probability,
+that means shifting the density toward the tail.
+
+## Method
+
+1. Choose a proposal $p$ that puts more mass on the important region, with tails at least as heavy as $f$'s.
+2. Draw $Y_1,\dots,Y_n$ from $p$.
+3. Compute the weights $w_i = f(Y_i)/p(Y_i)$.
+4. Compute the values $g(Y_i)\,w_i$.
+5. The estimate is their mean, and the SE is their standard deviation divided by $\sqrt n$.
+
+## Example 3: a rare event with importance sampling
+
+For $P(Z>4)$, use the proposal $N(4,1)$, which is centred at the threshold.
+
+```{r ex3}
+n <- 10000
+a <- 4
+
+# Plain Monte Carlo
+x <- rnorm(n)
+g_naive <- as.numeric(x > a)
+
+# Importance sampling
+y <- rnorm(n, mean = a)                 # draw from p = N(4, 1)
+w <- dnorm(y) / dnorm(y, mean = a)      # w = f / p
+g_is <- (y > a) * w
+
+data.frame(
+  method   = c("Plain MC", "Importance"),
+  estimate = c(mean(g_naive), mean(g_is)),
+  se       = c(sd(g_naive) / sqrt(n), sd(g_is) / sqrt(n)),
+  truth    = 1 - pnorm(a)
 )
-
-set.seed(123)
-library(tidyverse)
-library(ggplot2)
-library(dplyr)
-library(knitr)
-library(kableExtra)
-library(gridExtra)
-library(patchwork)
 ```
 
-# Learning Objectives
+Plain Monte Carlo gives 0 with SE 0, which looks precise but is useless.
+Importance sampling lands close to the truth with a tiny standard error,
+using the same $n$.
 
-By the end of this unit, a student should be able to
-
-- express a definite integral or a probability as an expectation, and
-  estimate it by simple Monte Carlo simulation,
-- derive the standard error of a Monte Carlo estimator and construct a
-  confidence interval for the true value using the central limit
-  theorem,
-- state and prove the theory of importance sampling, including the
-  characterization of the variance-minimizing importance density,
-- implement importance sampling in R, including the self-normalized
-  form used when the target density is known only up to a constant,
-- explain why naive Monte Carlo fails for rare-event probabilities and
-  how importance sampling restores efficiency,
-- evaluate the trade-offs of Monte Carlo and importance sampling
-  relative to the deterministic numerical methods of Unit 4.2.
-
-# Prerequisites
-
-Students should be comfortable with
-
-- Units 3.1-3.6 (generation of pseudo-random variates by inverse
-  transformation, acceptance-rejection, and related methods) and Unit
-  3.4 in particular (exponential tilting),
-- Unit 4.2 (numerical integration by quadrature, as the deterministic
-  counterpart to the methods of this unit),
-- the law of large numbers and the central limit theorem,
-- the Cauchy-Schwarz inequality,
-- R programming, including vectorized simulation and writing
-  functions.
-
-# Introduction
-
-Unit 4.2 developed quadrature formulas — the trapezoidal and Simpson's
-rules — that approximate a definite integral using a fixed grid of
-evaluation points. These methods are highly accurate in one dimension,
-but their cost grows explosively with dimension: a grid fine enough to
-be useful in one dimension, repeated in $d$ dimensions, requires a
-number of evaluation points growing like (grid size)$^d$, a phenomenon
-known as the curse of dimensionality. **Monte Carlo integration** takes
-an entirely different approach: rather than a deterministic grid, it
-uses random sampling, and its accuracy depends on the sample size $n$
-rather than on the dimension of the integral at all — the same $O(1/
-\sqrt n)$ convergence rate holds whether the integral is
-one-dimensional or fifty-dimensional. This is why Monte Carlo methods,
-despite converging more slowly than quadrature in low dimensions, are
-indispensable for the high-dimensional integrals that pervade modern
-Bayesian statistics and computational finance.
-
-The method traces to Stanislaw Ulam and John von Neumann's work on
-neutron diffusion at Los Alamos in the 1940s, with the name "Monte
-Carlo" (coined by Nicholas Metropolis, referencing the famous casino)
-reflecting its reliance on randomness. In its most basic form, Monte
-Carlo integration reduces to a single idea already used implicitly
-throughout Unit 3: any integral can be rewritten as an expectation
-under some probability distribution, and an expectation can be
-estimated by the sample average of simulated draws from that
-distribution, an application of the law of large numbers.
-
-A refinement of this basic idea, **importance sampling**, addresses a
-critical weakness: the plain Monte Carlo estimator can have very high
-variance — or, in the extreme case of estimating a rare-event
-probability, can produce an estimate of exactly zero with high
-probability — whenever the region contributing most to the integral is
-rarely visited by straightforward simulation. Importance sampling
-resolves this by deliberately sampling from a different, better-chosen
-distribution that visits the important region more often, and
-correcting for the resulting distortion with a reweighting factor. The
-technique connects directly to the exponential tilting construction of
-Unit 3.4, generalizing it from a device for exact simulation of tail
-events into a general-purpose variance-reduction tool for estimating
-rare-event probabilities and expectations.
-
-The practical importance of this unit is central to contemporary
-statistical computing: Bayesian posterior expectations, option prices
-in mathematical finance, and failure probabilities in structural and
-systems reliability are all, at their core, integrals estimated by
-exactly the machinery developed here.
-
-# Intuition
-
-Suppose the goal is to estimate the average height of a very large
-crowd, too large to measure every person. The obvious approach is to
-measure a random sample of people and average their heights; by the
-law of large numbers, this sample average converges to the true
-population average as the sample grows. Estimating a definite integral
-$\int_a^b h(x)\,dx$ by simulation follows exactly the same logic: if
-$X$ is drawn uniformly on $[a,b]$, then $\int_a^b h(x)\,dx = (b-a)\,
-E[h(X)]$, so averaging $h(X_1),\dots,h(X_n)$ over a large simulated
-sample and multiplying by $(b-a)$ estimates the integral, just as
-averaging measured heights estimates the population mean.
-
-The trouble with this "uniform sampling" strategy arises when the
-function of interest, or the event of interest, is concentrated in a
-small region of the sampling space. Estimating the average height
-of professional basketball players by measuring a uniformly random
-sample of the *general* population would require an enormous sample,
-because basketball players are rare in the general population — most
-of the sampling effort is wasted on people who tell you nothing about
-the quantity of interest. The remedy is obvious once stated: sample
-directly from basketball players, or from a population enriched with
-them, and correct the resulting average using the known relative rarity
-of basketball players in the general population. This "sample from
-where it matters, then correct for the distortion" strategy is exactly
-importance sampling, and it is the difference between an estimator
-that is hopelessly noisy and one that is precise, for exactly the same
-computational budget.
-
-```{r intuition-figure, echo=FALSE, fig.cap="Naive sampling from f (left) rarely visits the shaded rare-event region; importance sampling from a shifted proposal p (right) visits it routinely, at the cost of needing a reweighting correction."}
-x_grid <- seq(-4, 7, length.out = 400)
-f_density <- dnorm(x_grid, 0, 1)
-p_density <- dnorm(x_grid, 4, 1)
-
-rare_region <- tibble(x = x_grid[x_grid >= 4], y = dnorm(x_grid[x_grid >= 4], 0, 1))
-
-p_naive <- ggplot() +
-  geom_line(data = tibble(x = x_grid, y = f_density), aes(x, y), colour = "steelblue", linewidth = 1) +
-  geom_area(data = rare_region, aes(x, y), fill = "firebrick", alpha = 0.6) +
-  labs(title = "Sampling from f: rare region rarely visited", x = "x", y = "Density") +
-  theme_minimal(base_size = 11)
-
-p_importance <- ggplot() +
-  geom_line(data = tibble(x = x_grid, y = p_density), aes(x, y), colour = "darkgreen", linewidth = 1) +
-  geom_area(data = rare_region, aes(x, y = dnorm(x, 4, 1)), fill = "firebrick", alpha = 0.6) +
-  labs(title = "Sampling from proposal p: rare region visited often", x = "x", y = "Density") +
-  theme_minimal(base_size = 11)
-
-p_naive + p_importance
+```{r ex3-plot, echo=FALSE, fig.cap="Left: f = N(0,1) rarely reaches the shaded tail. Right: the proposal N(4,1) reaches it half the time."}
+xs <- seq(-4, 8, length.out = 400)
+par(mfrow = c(1, 2))
+plot(xs, dnorm(xs), type = "l", col = "steelblue", lwd = 2,
+     xlab = "x", ylab = "Density", main = "Sample from f")
+polygon(c(a, xs[xs >= a]), c(0, dnorm(xs[xs >= a])), col = "firebrick", border = NA)
+plot(xs, dnorm(xs, a), type = "l", col = "darkgreen", lwd = 2,
+     xlab = "x", ylab = "Density", main = "Sample from proposal p")
+polygon(c(a, xs[xs >= a]), c(0, dnorm(xs[xs >= a], a)), col = "firebrick", border = NA)
 ```
 
-# Formal Definitions
+## Check the weights
 
-## Monte Carlo Integration
-
-**Definition.** Let $\theta = \int g(x) f(x)\,dx = E_f[g(X)]$ for a
-probability density $f$ and a function $g$. The **(simple) Monte
-Carlo estimator** of $\theta$, based on an i.i.d. sample
-$X_1,\dots,X_n \sim f$, is
+If a few weights are huge and the rest are tiny, the proposal is a bad
+match. A quick check is the **effective sample size**:
 
 $$
-\hat\theta_{\text{MC}} = \frac1n\sum_{i=1}^n g(X_i).
-\tag{3.1}
+n_{\text{eff}} = \frac{(\sum_i w_i)^2}{\sum_i w_i^2}
 $$
 
-Any definite integral $\int_a^b h(x)\,dx$ can be cast in this form by
-writing $\int_a^b h(x)\,dx = (b-a)\,E_U[h(U)]$ for
-$U\sim\text{Uniform}(a,b)$, and any probability $P(X\in A)$ can be
-cast in this form as $E_f[\mathbf 1_A(X)]$, so (3.1) covers both
-integral approximation and probability estimation as special cases.
+If $n_{\text{eff}}$ is much smaller than $n$, be suspicious of the estimate.
 
-## Importance Sampling
-
-**Definition.** Let $p$ be a probability density with support covering
-the support of $g\cdot f$ (i.e. $p(x)>0$ wherever $g(x)f(x)\ne0$). The
-**importance sampling estimator** of $\theta=E_f[g(X)]$, based on an
-i.i.d. sample $Y_1,\dots,Y_n \sim p$, is
-
-$$
-\hat\theta_{\text{IS}} = \frac1n\sum_{i=1}^n g(Y_i)\,w(Y_i),
-\qquad w(x) = \frac{f(x)}{p(x)},
-\tag{3.2}
-$$
-
-where $p$ is called the **importance density** (or **proposal
-density**) and $w$ is the **importance weight**.
-
-# Theorems
-
-## Theorem 3.1: Unbiasedness and Consistency of Monte Carlo Estimators
-
-**Statement.** The simple Monte Carlo estimator (3.1) is unbiased,
-$E(\hat\theta_{\text{MC}})=\theta$, and, provided
-$\sigma_g^2=\operatorname{Var}_f(g(X))<\infty$, consistent,
-$\hat\theta_{\text{MC}} \xrightarrow{\text{a.s.}} \theta$ as
-$n\to\infty$, with
-
-$$
-\sqrt n\,(\hat\theta_{\text{MC}}-\theta) \;\xrightarrow{d}\; N(0,\sigma_g^2).
-\tag{3.3}
-$$
-
-The importance sampling estimator (3.2) is likewise unbiased for any
-valid choice of $p$, with $\operatorname{Var}(\hat\theta_{\text{IS}}) =
-\sigma_{gw}^2/n$, $\sigma_{gw}^2 = \operatorname{Var}_p(g(Y)w(Y))$.
-
-**Assumptions.** $X_1,\dots,X_n$ (or $Y_1,\dots,Y_n$) i.i.d.;
-$\sigma_g^2<\infty$ (or $\sigma_{gw}^2<\infty$).
-
-**Proof.** Unbiasedness of (3.1) follows from linearity of
-expectation, $E(\hat\theta_{\text{MC}}) = n^{-1}\sum_i E(g(X_i)) =
-E_f(g(X)) = \theta$. Consistency follows from the strong law of large
-numbers applied to the i.i.d. sequence $g(X_1),g(X_2),\dots$ with
-finite mean $\theta$. The central limit theorem, applied to the same
-i.i.d. sequence with finite variance $\sigma_g^2$, gives (3.3)
-directly. For the importance sampling estimator, unbiasedness follows
-from a change of variables:
-
-$$
-E_p\bigl[g(Y)w(Y)\bigr] = \int g(y)\frac{f(y)}{p(y)}\,p(y)\,dy
-= \int g(y)f(y)\,dy = \theta,
-$$
-
-valid whenever $p(y)>0$ on the support of $g\cdot f$ (so the ratio
-$f(y)/p(y)$ is well defined there); the variance formula follows
-because $\hat\theta_{\text{IS}}$ is a sample mean of the i.i.d.
-sequence $g(Y_1)w(Y_1), g(Y_2)w(Y_2),\dots$. $\blacksquare$
-
-**Remarks.** Equation (3.3) is the basis of the Monte Carlo confidence
-interval $\hat\theta \pm z_{1-\alpha/2}\, s_g/\sqrt n$, where $s_g$ is
-the sample standard deviation of the simulated $g(X_i)$ (or
-$g(Y_i)w(Y_i)$) values — exactly analogous to a standard confidence
-interval for a sample mean, since a Monte Carlo estimator *is* a
-sample mean.
-
-**Examples.** Worked in Section 12.
-
-**Applications.** This theorem justifies reporting a standard error
-alongside every Monte Carlo estimate, exactly as one would for any
-other sample-mean-based statistic.
-
-## Theorem 3.2: The Variance-Minimizing Importance Density
-
-**Statement.** Among all importance densities $p$ with the same
-support as $g\cdot f$ (so that (3.2) is unbiased for every candidate
-$p$), the variance of $\hat\theta_{\text{IS}}$ is minimized by
-
-$$
-p^{*}(x) = \frac{|g(x)|\,f(x)}{\int |g(u)|\,f(u)\,du}.
-\tag{3.4}
-$$
-
-If, in addition, $g(x)\ge 0$ for every $x$, sampling from $p^{*}$
-gives $\operatorname{Var}(\hat\theta_{\text{IS}})=0$ exactly.
-
-**Assumptions.** $\int|g(x)|f(x)\,dx<\infty$ (so that $p^{*}$ is a
-valid, normalizable density).
-
-**Proof.** From Theorem 3.1, minimizing $\operatorname{Var}_p(g(Y)w(Y))$
-is equivalent to minimizing $E_p[(g(Y)w(Y))^2]$ (since the mean of
-$g(Y)w(Y)$ is fixed at $\theta$ regardless of $p$, by unbiasedness).
-Writing this second moment as an integral,
-
-$$
-E_p\bigl[(g(Y)w(Y))^2\bigr] = \int \frac{g(x)^2f(x)^2}{p(x)^2}\,p(x)\,dx
-= \int \frac{g(x)^2 f(x)^2}{p(x)}\,dx.
-$$
-
-By the Cauchy-Schwarz inequality, applied to the functions
-$|g(x)|f(x)/\sqrt{p(x)}$ and $\sqrt{p(x)}$,
-
-$$
-\left(\int |g(x)|f(x)\,dx\right)^2
-= \left(\int \frac{|g(x)|f(x)}{\sqrt{p(x)}}\cdot\sqrt{p(x)}\,dx\right)^2
-\le \left(\int \frac{g(x)^2f(x)^2}{p(x)}\,dx\right)\left(\int p(x)\,dx\right),
-$$
-
-and since $\int p(x)\,dx=1$, this gives
-
-$$
-\int \frac{g(x)^2f(x)^2}{p(x)}\,dx \;\ge\; \left(\int |g(x)|f(x)\,dx\right)^2,
-\tag{3.5}
-$$
-
-with equality in the Cauchy-Schwarz inequality if and only if
-$|g(x)|f(x)/\sqrt{p(x)}$ is proportional to $\sqrt{p(x)}$, i.e.
-$p(x) \propto |g(x)|f(x)$ — exactly $p^{*}$ in (3.4). This proves
-$p^{*}$ minimizes the second moment, hence the variance. When
-$g(x)\ge0$ everywhere, the lower bound in (3.5) equals
-$\bigl(\int g(x)f(x)\,dx\bigr)^2 = \theta^2$, so the minimum achievable
-variance is $\theta^2 - \theta^2 = 0$. $\blacksquare$
-
-**Remarks.** The zero-variance result is a theoretical benchmark, not
-a practical algorithm: sampling from $p^{*}$ requires knowing
-$\int|g(u)|f(u)\,du$, which is (a simple transformation of) the very
-quantity $\theta$ being estimated. Its practical value is as a design
-principle: a good importance density should be *shaped like* $|g|f$ —
-concentrating sampling effort where $|g(x)|f(x)$ is largest — even
-though matching it exactly is circular.
-
-**Examples.** Worked in Section 12.
-
-**Applications.** This theorem is the theoretical justification for
-exponential tilting (Unit 3.4) as an importance sampling device for
-rare-event probabilities: for $g(x)=\mathbf 1_{\{x>a\}}$, the ideal
-$p^{*}$ is $f$ truncated and renormalized to $(a,\infty)$, and a tilted
-exponential or shifted Normal density approximates this truncated
-shape far better than the untilted $f$ itself does.
-
-# Mathematical Derivations
-
-## Self-Normalized Importance Sampling
-
-In many applications — most importantly, Bayesian posterior
-computation — the target density is known only up to a normalizing
-constant, $f(x) = \tilde f(x)/c$ for an intractable constant $c =
-\int\tilde f(u)\,du$. Writing $\theta = \int g(x)f(x)\,dx$ and
-substituting,
-
-$$
-\theta = \frac{\int g(x)\tilde f(x)\,dx}{\int \tilde f(u)\,du}
-= \frac{\int g(x)\,\tilde w(x)\,p(x)\,dx}{\int \tilde w(u)\,p(u)\,du},
-\qquad \tilde w(x) = \frac{\tilde f(x)}{p(x)},
-$$
-
-obtained by multiplying and dividing both the numerator and
-denominator integrals by $p(x)$. Replacing both integrals by their
-Monte Carlo estimates under a sample $Y_1,\dots,Y_n\sim p$ gives the
-**self-normalized importance sampling estimator**
-
-$$
-\hat\theta_{\text{SNIS}} = \frac{\sum_{i=1}^n g(Y_i)\,\tilde w(Y_i)}
-{\sum_{i=1}^n \tilde w(Y_i)},
-\tag{3.6}
-$$
-
-which requires knowledge of $\tilde f$ only up to the unknown constant
-$c$ (which cancels between numerator and denominator). Unlike (3.2),
-the estimator (3.6) is a ratio of two random quantities and is
-therefore biased for finite $n$ (by Jensen's inequality applied to the
-ratio, in general), though it remains consistent as $n\to\infty$ by
-the law of large numbers applied to the numerator and denominator
-separately, combined with the continuous mapping theorem.
-
-## Naive Monte Carlo Failure for Rare Events
-
-For $\theta=P(X\in A)=E_f[\mathbf 1_A(X)]$ with $\theta$ very small (a
-rare event), the naive Monte Carlo estimator (3.1) is an average of
-$n$ i.i.d. Bernoulli$(\theta)$ indicators, with variance
-$\theta(1-\theta)/n \approx \theta/n$ for small $\theta$. The
-**relative** standard error is therefore
-
-$$
-\frac{\text{se}(\hat\theta_{\text{MC}})}{\theta}
-\approx \sqrt{\frac{\theta/n}{\theta^2}} = \frac{1}{\sqrt{n\theta}},
-\tag{3.7}
-$$
-
-which stays large unless $n \gg 1/\theta$: to estimate a probability
-of order $10^{-6}$ to within a modest relative error of $10\%$
-requires roughly $n \approx 100/\theta = 10^8$ simulated draws — often
-computationally infeasible, and a sample of more ordinary size will,
-with high probability, observe *zero* occurrences of the event at
-all, giving the useless estimate $\hat\theta_{\text{MC}}=0$. This is
-precisely the situation importance sampling with a proposal
-concentrated on $A$ is designed to remedy: for such a proposal, the
-indicator $\mathbf 1_A(Y_i)$ is no longer rare, and the relative
-standard error of $\hat\theta_{\text{IS}}$ need not degrade as
-$\theta\to0$, as the simulation study in Section 10.3 demonstrates
-directly.
-
-# Algorithms
-
-## Algorithm 3.1: Basic Monte Carlo Integration
-
-**Purpose.** Estimate $\theta=E_f[g(X)]$ (an integral, expectation, or
-probability) by direct simulation from $f$.
-
-**Input.** Sampler for $f$; function $g$; sample size $n$.
-
-**Output.** Point estimate $\hat\theta_{\text{MC}}$ and standard error.
-
-**Step-by-step procedure.**
-
-1. Draw $X_1,\dots,X_n$ i.i.d. from $f$.
-2. Compute $\hat\theta_{\text{MC}} = n^{-1}\sum_i g(X_i)$.
-3. Compute the standard error as $s_g/\sqrt n$, $s_g$ the sample
-   standard deviation of $g(X_1),\dots,g(X_n)$.
-
-**Pseudo-code.**
-
-```
-Algorithm: Monte Carlo Integration
-Input:  sampler for f, g(), n
-Output: theta_hat, standard error
-
-1. x[1..n] <- draw n iid values from f
-2. g_values <- g(x)
-3. theta_hat <- mean(g_values)
-4. se <- sd(g_values) / sqrt(n)
-5. Return theta_hat, se
+```{r ess}
+w_all <- w * (y > a)                    # weights on the draws that matter
+c(n = n, n_eff = sum(w_all)^2 / sum(w_all^2))
 ```
 
-**Flowchart description.** Start; draw $n$ i.i.d. samples from $f$;
-evaluate $g$ at each; average the results for the point estimate;
-compute the sample standard deviation and divide by $\sqrt n$ for the
-standard error; end.
-
-**Complexity.** $O(n)$, given $O(1)$-amortized sampling from $f$ and
-$O(1)$ evaluation of $g$.
-
-**Practical considerations.** Unlike quadrature (Unit 4.2), whose
-accuracy depends on the dimension of the integral, Monte Carlo
-integration's $O(1/\sqrt n)$ error rate is dimension-free, making it
-the method of choice for integrals in more than a few dimensions.
-
-## Algorithm 3.2: Importance Sampling Estimator
-
-**Purpose.** Estimate $\theta=E_f[g(X)]$ by sampling from a
-better-matched proposal $p$, reducing variance relative to Algorithm
-3.1.
-
-**Input.** Sampler for $p$; density evaluators for $f$ and $p$;
-function $g$; sample size $n$.
-
-**Output.** Point estimate $\hat\theta_{\text{IS}}$ and standard
-error.
-
-**Step-by-step procedure.**
-
-1. Draw $Y_1,\dots,Y_n$ i.i.d. from $p$.
-2. Compute weights $w(Y_i) = f(Y_i)/p(Y_i)$.
-3. Compute $\hat\theta_{\text{IS}} = n^{-1}\sum_i g(Y_i)w(Y_i)$.
-4. Compute the standard error as $s_{gw}/\sqrt n$, $s_{gw}$ the sample
-   standard deviation of the products $g(Y_i)w(Y_i)$.
-
-**Pseudo-code.**
-
-```
-Algorithm: Importance Sampling
-Input:  sampler for p, f(), p(), g(), n
-Output: theta_hat, standard error
-
-1. y[1..n] <- draw n iid values from p
-2. w <- f(y) / p(y)
-3. gw <- g(y) * w
-4. theta_hat <- mean(gw)
-5. se <- sd(gw) / sqrt(n)
-6. Return theta_hat, se
-```
-
-**Flowchart description.** Start; draw $n$ i.i.d. samples from the
-proposal $p$; compute the importance weight at each sample; multiply
-by $g$; average for the point estimate; compute the standard error
-from the spread of the weighted values; end.
-
-**Complexity.** $O(n)$, identical order to Algorithm 3.1, but with a
-potentially much smaller constant (variance) if $p$ is well chosen.
-
-**Practical considerations.** A poorly chosen $p$ — in particular, one
-with a lighter tail than $f\cdot g$ — can make
-$\operatorname{Var}(\hat\theta_{\text{IS}})$ *larger* than the naive
-estimator's variance, or even infinite; the design principle from
-Theorem 3.2 (shape $p$ like $|g|f$) should always guide the choice.
-
-## Algorithm 3.3: Self-Normalized Importance Sampling
-
-**Purpose.** Estimate $\theta=E_f[g(X)]$ when $f$ is known only up to
-an unknown normalizing constant.
-
-**Input.** Sampler for $p$; evaluator for the unnormalized target
-$\tilde f$; evaluator for $p$; function $g$; sample size $n$.
-
-**Output.** Point estimate $\hat\theta_{\text{SNIS}}$.
-
-**Step-by-step procedure.**
-
-1. Draw $Y_1,\dots,Y_n$ i.i.d. from $p$.
-2. Compute unnormalized weights $\tilde w(Y_i) = \tilde f(Y_i)/p(Y_i)$.
-3. Compute $\hat\theta_{\text{SNIS}} = \dfrac{\sum_i g(Y_i)\tilde
-   w(Y_i)}{\sum_i \tilde w(Y_i)}$ as in (3.6).
-
-**Pseudo-code.**
-
-```
-Algorithm: Self-Normalized Importance Sampling
-Input:  sampler for p, f_tilde(), p(), g(), n
-Output: theta_hat
-
-1. y[1..n] <- draw n iid values from p
-2. w_tilde <- f_tilde(y) / p(y)
-3. theta_hat <- sum(g(y) * w_tilde) / sum(w_tilde)
-4. Return theta_hat
-```
-
-**Flowchart description.** Start; draw $n$ samples from the proposal;
-compute unnormalized importance weights using the unnormalized target;
-form the ratio of the weighted-$g$ sum to the weight sum; end.
-
-**Complexity.** $O(n)$, identical to Algorithm 3.2.
-
-**Practical considerations.** Self-normalized importance sampling is
-biased for finite $n$ (Section 8.1), though the bias is typically
-$O(1/n)$ and negligible for moderate to large $n$; it is the standard
-tool for estimating posterior expectations in Bayesian computation
-when only the unnormalized posterior kernel is available.
-
-## Algorithm 3.4: Rare-Event Probability Estimation via Importance Sampling
-
-**Purpose.** Estimate a small probability $\theta=P(X>a)$ efficiently,
-avoiding the catastrophic relative-error growth of naive Monte Carlo
-described in Section 8.2.
-
-**Input.** Threshold $a$; target density $f$; a shifted or tilted
-proposal $p$ concentrating mass beyond $a$ (for example, $N(a,1)$ when
-$f$ is standard Normal, or the exponentially tilted density of Unit
-3.4); sample size $n$.
-
-**Step-by-step procedure.**
-
-1. Draw $Y_1,\dots,Y_n$ i.i.d. from $p$.
-2. Compute $\hat\theta_{\text{IS}} = n^{-1}\sum_i \mathbf 1_{\{Y_i>a\}}
-   \, w(Y_i)$, $w(x)=f(x)/p(x)$, using Algorithm 3.2 with
-   $g(x)=\mathbf 1_{\{x>a\}}$.
-
-**Pseudo-code.**
-
-```
-Algorithm: Rare-Event IS
-Input:  a, f(), sampler for tilted proposal p, p(), n
-Output: theta_hat, se
-
-1. y[1..n] <- draw n iid values from p
-2. w <- f(y) / p(y)
-3. indicator <- (y > a)
-4. gw <- indicator * w
-5. theta_hat <- mean(gw)
-6. se <- sd(gw) / sqrt(n)
-7. Return theta_hat, se
-```
-
-**Flowchart description.** Start; draw samples from a proposal shifted
-toward the rare region beyond $a$; weight each by the density ratio;
-average the weighted indicators; end.
-
-**Complexity.** $O(n)$, but with $n$ orders of magnitude smaller than
-naive Monte Carlo would require for the same relative precision, as
-quantified in Section 10.3.
-
-**Practical considerations.** The proposal's tail must not be lighter
-than $f$'s tail beyond $a$ (the same requirement noted for
-acceptance-rejection envelopes in Unit 3.4), or the importance weights
-will have infinite variance; a proposal that is itself a tilted or
-shifted version of $f$, as constructed in Unit 3.4, generally
-satisfies this requirement by design.
-
-# R Programming
-
-```{r monte-carlo-functions}
-set.seed(123)
-
-#' Basic Monte Carlo integration estimator
-#'
-#' Purpose: implements Algorithm 3.1.
-#'
-#' Arguments:
-#'   sampler_function     zero-argument function returning one draw from f
-#'   integrand_function   the function g to average
-#'   sample_size          number of Monte Carlo draws
-#'
-#' Returns:
-#'   a list with the point estimate and standard error
-#'
-#' Example:
-#'   monte_carlo_integrate(function() runif(1), function(x) exp(-x), 2000)
-monte_carlo_integrate <- function(sampler_function, integrand_function, sample_size) {
-  simulated_draws <- vapply(seq_len(sample_size), function(i) sampler_function(), numeric(1))
-  g_values <- integrand_function(simulated_draws)
-
-  list(
-    estimate = mean(g_values),
-    standard_error = sd(g_values) / sqrt(sample_size)
-  )
-}
-
-#' Importance sampling estimator
-#'
-#' Purpose: implements Algorithm 3.2.
-#'
-#' Arguments:
-#'   proposal_sampler      zero-argument function returning one draw from p
-#'   target_density        function evaluating f(x)
-#'   proposal_density       function evaluating p(x)
-#'   integrand_function     the function g
-#'   sample_size            number of importance samples
-#'
-#' Returns:
-#'   a list with the point estimate, standard error, and importance
-#'   weights (useful for diagnosing weight degeneracy)
-#'
-#' Example:
-#'   importance_sampling_estimate(
-#'     function() rnorm(1, mean = 3, sd = 1),
-#'     function(x) dnorm(x, 0, 1),
-#'     function(x) dnorm(x, 3, 1),
-#'     function(x) as.numeric(x > 3),
-#'     2000
-#'   )
-importance_sampling_estimate <- function(proposal_sampler, target_density, proposal_density,
-                                          integrand_function, sample_size) {
-  simulated_draws <- vapply(seq_len(sample_size), function(i) proposal_sampler(), numeric(1))
-  importance_weights <- target_density(simulated_draws) / proposal_density(simulated_draws)
-  weighted_values <- integrand_function(simulated_draws) * importance_weights
-
-  list(
-    estimate = mean(weighted_values),
-    standard_error = sd(weighted_values) / sqrt(sample_size),
-    weights = importance_weights
-  )
-}
-
-#' Self-normalized importance sampling estimator
-#'
-#' Purpose: implements Algorithm 3.3, for a target known only up to a
-#' normalizing constant.
-#'
-#' Arguments:
-#'   proposal_sampler        zero-argument function returning one draw from p
-#'   unnormalized_target     function evaluating the unnormalized target
-#'   proposal_density         function evaluating p(x)
-#'   integrand_function       the function g
-#'   sample_size              number of importance samples
-#'
-#' Returns:
-#'   the self-normalized point estimate (numeric scalar)
-#'
-#' Example:
-#'   self_normalized_is(
-#'     function() rnorm(1, 0, 2),
-#'     function(x) exp(-x^2 / 2),
-#'     function(x) dnorm(x, 0, 2),
-#'     function(x) x^2,
-#'     2000
-#'   )
-self_normalized_is <- function(proposal_sampler, unnormalized_target, proposal_density,
-                                integrand_function, sample_size) {
-  simulated_draws <- vapply(seq_len(sample_size), function(i) proposal_sampler(), numeric(1))
-  unnormalized_weights <- unnormalized_target(simulated_draws) / proposal_density(simulated_draws)
-
-  sum(integrand_function(simulated_draws) * unnormalized_weights) / sum(unnormalized_weights)
-}
-```
-
-# Simulation Studies
-
-## Monte Carlo Confidence Interval Coverage (Theorem 3.1)
-
-```{r mc-ci-coverage}
-set.seed(123)
-
-true_theta <- 1 - exp(-1)
-n_trials <- 1000
-sample_size_mc <- 500
-coverage_hits <- logical(n_trials)
-
-for (trial in seq_len(n_trials)) {
-  draws <- runif(sample_size_mc)
-  g_vals <- exp(-draws)
-  est <- mean(g_vals)
-  se <- sd(g_vals) / sqrt(sample_size_mc)
-  coverage_hits[trial] <- (true_theta >= est - 1.96 * se) && (true_theta <= est + 1.96 * se)
-}
-
-tibble(
-  Quantity = c("Nominal coverage", "Empirical coverage (1000 trials)"),
-  Value = c(0.95, mean(coverage_hits))
-) %>%
-  kable(digits = 4, caption = "Coverage of the Monte Carlo 95% CLT-based confidence interval")
-```
-
-## Variance Reduction via Importance Sampling (Theorem 3.2)
-
-```{r variance-reduction-simulation}
-set.seed(123)
-
-n_is_sim <- 20000
-
-naive_estimate <- monte_carlo_integrate(
-  function() rnorm(1, 0, 1), function(x) as.numeric(x > 3), n_is_sim
-)
-
-is_estimate <- importance_sampling_estimate(
-  function() rnorm(1, mean = 3, sd = 1),
-  function(x) dnorm(x, 0, 1),
-  function(x) dnorm(x, 3, 1),
-  function(x) as.numeric(x > 3),
-  n_is_sim
-)
-
-true_p3 <- 1 - pnorm(3)
-
-tibble(
-  Method = c("Naive Monte Carlo", "Importance Sampling (N(3,1) proposal)"),
-  Estimate = c(naive_estimate$estimate, is_estimate$estimate),
-  Standard_Error = c(naive_estimate$standard_error, is_estimate$standard_error),
-  True_Value = true_p3
-) %>%
-  kable(digits = 6, caption = "Estimating P(Z > 3): naive Monte Carlo vs. importance sampling, same n")
-```
-
-## Rare-Event Simulation at an Extreme Threshold
-
-```{r rare-event-extreme}
-set.seed(123)
-
-extreme_threshold <- 4.5
-true_p_extreme <- 1 - pnorm(extreme_threshold)
-
-n_extreme <- 20000
-naive_extreme <- monte_carlo_integrate(
-  function() rnorm(1, 0, 1), function(x) as.numeric(x > extreme_threshold), n_extreme
-)
-is_extreme <- importance_sampling_estimate(
-  function() rnorm(1, mean = extreme_threshold, sd = 1),
-  function(x) dnorm(x, 0, 1),
-  function(x) dnorm(x, extreme_threshold, 1),
-  function(x) as.numeric(x > extreme_threshold),
-  n_extreme
-)
-
-tibble(
-  Method = c("Naive Monte Carlo", "Importance Sampling"),
-  Estimate = c(naive_extreme$estimate, is_extreme$estimate),
-  Standard_Error = c(naive_extreme$standard_error, is_extreme$standard_error),
-  True_Value = true_p_extreme
-) %>%
-  kable(digits = 8, caption = "Estimating P(Z > 4.5) (true value approx 3.4e-6): naive MC typically observes zero hits")
-```
-
-The naive Monte Carlo estimator at this extreme threshold is very
-likely to be exactly zero (since $n \times \theta \approx
-20000\times 3.4\times10^{-6} \approx 0.07$, so a hit is rare even
-across the whole sample), while the importance sampling estimator,
-using a proposal centred at the threshold itself, reliably produces an
-accurate, low-variance estimate with the same computational budget.
-
-# Graphs
-
-```{r importance-weights-diagnostic, fig.cap="Distribution of importance weights for the P(Z>3) estimation: weights are well-behaved (no extreme outliers), indicating a well-matched proposal."}
-ggplot(tibble(weight = is_estimate$weights), aes(x = weight)) +
-  geom_histogram(bins = 40, fill = "steelblue", colour = "white") +
-  labs(title = "Importance weights, N(3,1) proposal targeting P(Z>3)", x = "Weight w(Y)", y = "Count") +
-  theme_minimal(base_size = 11)
-```
-
-```{r mc-convergence-plot, fig.cap="Monte Carlo estimate of the integral of exp(-x) on [0,1] converging to the true value as n grows, with the CLT-based 95% band narrowing at rate 1/sqrt(n)."}
-set.seed(123)
-
-n_sequence <- round(10^seq(1, 4.3, length.out = 40))
-running_draws <- runif(max(n_sequence))
-running_g <- exp(-running_draws)
-running_mean <- cumsum(running_g) / seq_along(running_g)
-running_se <- sqrt(cumsum((running_g - mean(running_g))^2) / seq_along(running_g)^2)
-
-trace_df <- tibble(
-  n = seq_along(running_g),
-  estimate = running_mean,
-  se = running_se
-) %>% filter(n %in% n_sequence)
-
-ggplot(trace_df, aes(x = n, y = estimate)) +
-  geom_ribbon(aes(ymin = estimate - 1.96 * se, ymax = estimate + 1.96 * se), fill = "steelblue", alpha = 0.3) +
-  geom_line(colour = "steelblue") +
-  geom_hline(yintercept = 1 - exp(-1), colour = "darkred", linetype = "dashed") +
-  scale_x_log10() +
-  labs(
-    title = "Monte Carlo convergence for the integral of exp(-x) on [0,1]",
-    x = "Sample size n (log scale)", y = "Estimate"
-  ) +
-  theme_minimal(base_size = 11)
-```
-
-# Numerical Examples
-
-**Example 1: Basic Monte Carlo integration.**
-
-*Problem.* Estimate $\theta=\int_0^1 e^{-x}\,dx$ (true value
-$1-e^{-1}=0.632121$) using the five illustrative points
-$u=0.1,0.3,0.5,0.7,0.9$.
-
-*Solution.* $e^{-0.1}=0.904837$, $e^{-0.3}=0.740818$,
-$e^{-0.5}=0.606531$, $e^{-0.7}=0.496585$, $e^{-0.9}=0.406570$; their
-mean is
+# Self-Normalized Importance Sampling
+
+Sometimes $f$ is known only up to a constant: $f(x) = \tilde f(x)/c$ with
+$c$ unknown. This is typical for Bayesian posteriors. The constant cancels
+if you divide by the sum of the weights:
 
 $$
-\hat\theta = \frac{0.904837+0.740818+0.606531+0.496585+0.406570}{5}
-= 0.631068.
+\hat\theta_{SNIS} = \frac{\sum_i g(Y_i)\,\tilde w_i}{\sum_i \tilde w_i},
+\qquad \tilde w_i = \frac{\tilde f(Y_i)}{p(Y_i)}
 $$
 
-*Interpretation.* This mechanical illustration with five evenly
-spaced (rather than genuinely random) points already lands close to
-the true value $0.632121$ because $e^{-x}$ varies smoothly; a real
-Monte Carlo estimate with a random sample of this size would typically
-be noisier, which is exactly why Section 10 uses a much larger $n$
-and reports a standard error alongside the point estimate.
+It is slightly biased for finite $n$, but consistent.
 
-**Example 2: Monte Carlo probability estimation.**
+## Example 4: unknown normalizing constant
 
-*Problem.* Estimate $\theta=P(U_1+U_2>1.5)$ for independent
-$U_1,U_2\sim\text{Uniform}(0,1)$ (true value, by elementary geometry,
-$(2-1.5)^2/2=0.125$) using the five illustrative pairs
-$(0.8,0.9),(0.3,0.4),(0.6,0.95),(0.5,0.5),(0.9,0.7)$.
+Take the unnormalized target $\tilde f(x)=e^{-x^2/2}$ and estimate
+$E[X^2]$. The true value is $1$, because the target is $N(0,1)$. Use the
+proposal $N(0, 2^2)$.
 
-*Solution.* Sums: $1.7,\ 0.7,\ 1.55,\ 1.0,\ 1.6$; indicators (sum
-$>1.5$): $1,0,1,0,1$; $\hat\theta = 3/5 = 0.6$.
+```{r ex4}
+n <- 50000
+y <- rnorm(n, 0, 2)                       # draws from p
+w <- exp(-y^2 / 2) / dnorm(y, 0, 2)       # unnormalized weights
 
-*Interpretation.* With only $n=5$ points this estimate is far from
-the true value $0.125$ — a deliberate illustration of the point made
-by (3.7): the relative standard error of a probability estimate is
-large unless $n$ is substantially larger than $1/\theta$; the R
-simulation of Section 10 with thousands of draws is needed for an
-estimate that can be trusted.
+sum(y^2 * w) / sum(w)                     # SNIS estimate (truth = 1)
+```
 
-**Example 3: Importance sampling weight mechanics.**
-
-*Problem.* For target $f=N(0,1)$, importance proposal $p=N(3,1)$
-(used to estimate $P(Z>3)$), compute the importance weight $w(y)$ for
-$y=3.2$ and $y=3.5$.
-
-*Solution.* Following the same completing-the-square technique used
-for the tilted Normal-tail envelope in Unit 3.4, the weight simplifies
-to $w(y)=\varphi(y)/\varphi(y-3) = \exp(4.5-3y)$. For $y=3.2$:
-$w=\exp(4.5-9.6)=\exp(-5.1)=0.006097$. For $y=3.5$:
-$w=\exp(4.5-10.5)=\exp(-6)=0.002479$.
-
-*Interpretation.* The weight is small precisely because $Y$ values
-near $3.2$-$3.5$ are far more probable under the shifted proposal
-$N(3,1)$ than under the original target $N(0,1)$; the weight corrects
-for this over-representation so that the weighted average remains an
-unbiased estimate of the original $P(Z>3)$.
-
-**Example 4: Quantitative variance reduction.**
-
-*Problem.* Using the simulation of Section 10.2 (estimating
-$P(Z>3)$, true value $0.0013499$), compare the reported standard
-errors of the naive and importance sampling estimators and compute
-the variance reduction factor.
-
-*Solution.* From the R output in Section 10.2, the naive Monte Carlo
-standard error and the importance sampling standard error can be
-compared directly; the ratio of their squares gives the variance
-reduction factor achieved by importance sampling for the identical
-sample size $n$.
-
-*Interpretation.* The dramatic reduction — typically two to three
-orders of magnitude at this threshold, and far more at the more
-extreme threshold of Section 10.3 — reflects exactly the mechanism of
-Theorem 3.2: the $N(3,1)$ proposal is shaped much more closely like
-the ideal $p^{*}\propto \mathbf 1_{\{x>3\}}f(x)$ than the original
-$N(0,1)$ target is.
-
-# Applications
-
-- **Statistics.** Monte Carlo estimation of $p$-values and power for
-  test statistics whose null or alternative sampling distribution has
-  no closed form.
-- **Machine Learning.** Estimating expectations under complex,
-  high-dimensional posterior or variational distributions, where
-  importance sampling (and its sequential extensions) remains a
-  building block despite the popularity of MCMC alternatives.
-- **Data Science.** Estimating rare-event probabilities in large
-  observational datasets (for example, fraud or anomaly rates) using
-  reweighted subsampling schemes analogous to importance sampling.
-- **Finance.** Monte Carlo option pricing under risk-neutral measures,
-  and importance sampling for Value-at-Risk and Expected Shortfall
-  estimation, where the risk of interest is, by construction, a rare
-  event under the physical measure.
-- **Reliability Engineering.** Importance sampling is the standard
-  technique for estimating small system failure probabilities in
-  structural reliability analysis, where naive simulation would
-  require infeasibly many replications.
-- **Monte Carlo Methods.** This unit's methods are the direct
-  extension of the simulation techniques developed throughout Unit 3
-  into the specific task of numerical integration.
-- **Bayesian Statistics.** Self-normalized importance sampling
-  (Section 8.1) estimates posterior expectations directly from an
-  unnormalized posterior kernel, and importance sampling more broadly
-  underlies particle filtering and sequential Monte Carlo methods.
-- **Operations Research.** Estimating rare congestion, blocking, or
-  failure probabilities in queueing and network reliability models via
-  importance sampling.
-- **Engineering.** Estimating the probability of exceeding a safety
-  threshold under random loading, a rare-event problem structurally
-  identical to the tail-probability examples of this unit.
-
-# Advantages
-
-- Monte Carlo integration's error rate, $O(1/\sqrt n)$, does not
-  depend on the dimension of the integral, unlike quadrature methods,
-  making it the practical choice for high-dimensional problems.
-- Importance sampling can achieve dramatic variance reduction — often
-  several orders of magnitude — for the same computational budget,
-  when the proposal is well chosen.
-- Self-normalized importance sampling extends the method to the
-  common practical situation where the target density's normalizing
-  constant is unknown.
-
-# Limitations
-
-- Monte Carlo integration converges more slowly than quadrature in low
-  dimensions ($O(1/\sqrt n)$ versus $O(h^4)$ for Simpson's rule, for
-  example), so quadrature remains preferable for smooth, low-
-  dimensional integrands.
-- A poorly chosen importance proposal can *increase* variance relative
-  to naive Monte Carlo, or produce importance weights with infinite
-  variance if the proposal's tail is lighter than the target's.
-- The zero-variance ideal proposal of Theorem 3.2 is generally
-  unattainable in practice, since constructing it requires already
-  knowing the quantity being estimated.
-- Self-normalized importance sampling is biased for finite samples,
-  though the bias generally vanishes as $n\to\infty$.
-
-# Practical Tips
-
-- **Always report a standard error alongside a Monte Carlo estimate.**
-  Theorem 3.1 makes this straightforward, and an estimate without an
-  accompanying measure of its own uncertainty is difficult to
-  interpret responsibly.
-- **Diagnose importance sampling by inspecting the distribution of
-  weights**, as in the histogram of Section 11. A small number of
-  extremely large weights (weight degeneracy) signals a poorly matched
-  proposal and an unreliable variance estimate, even if the point
-  estimate looks plausible.
-- **Match the proposal's tail behaviour to the target's**, exactly as
-  required for acceptance-rejection envelopes in Unit 3.4; a
-  lighter-tailed proposal risks infinite-variance importance weights.
-- **For rare-event probabilities, shift or tilt the proposal toward
-  the event of interest**, following the design principle of Theorem
-  3.2, rather than relying on naive simulation, which becomes
-  hopelessly inefficient as the event becomes rarer (Section 8.2).
-- **Use self-normalized importance sampling whenever the target
-  density's normalizing constant is unavailable**, as is routine in
-  Bayesian posterior computation, rather than attempting to compute
-  the constant separately.
+We never used the constant $\sqrt{2\pi}$.
 
 # Summary
 
-- Monte Carlo integration estimates $\theta=E_f[g(X)]$ by the sample
-  average of $g$ evaluated at simulated draws from $f$; Theorem 3.1
-  establishes its unbiasedness, consistency, and CLT-based standard
-  error, with an error rate independent of dimension.
-- Importance sampling estimates the same quantity by sampling from an
-  alternative proposal $p$ and reweighting by $f/p$; Theorem 3.2
-  characterizes the variance-minimizing proposal
-  $p^{*}\propto|g|f$, achieving zero variance in the idealized case
-  $g\ge0$.
-- Self-normalized importance sampling extends the method to targets
-  known only up to a normalizing constant, at the cost of a finite-
-  sample bias that vanishes asymptotically.
-- Naive Monte Carlo fails catastrophically for rare-event
-  probabilities, with relative standard error growing like
-  $1/\sqrt{n\theta}$; importance sampling with a proposal shifted or
-  tilted toward the rare region (directly extending the exponential
-  tilting technique of Unit 3.4) restores efficient estimation, as
-  demonstrated quantitatively in this unit's simulation studies.
+| | Monte Carlo | Importance sampling |
+|---|---|---|
+| Draw from | $f$ | $p$ (chosen by you) |
+| Estimate | mean of $g(X)$ | mean of $g(Y)\,f(Y)/p(Y)$ |
+| SE | $s/\sqrt n$ | $s/\sqrt n$ (of weighted values) |
+| Best for | simple or high-dimensional integrals | rare events, high variance |
+| Best $p$ | | $\propto \lvert g\rvert f$ |
 
-# Key Formulae
+**Tips**
 
-- Monte Carlo estimator: $\hat\theta_{\text{MC}} = n^{-1}\sum_i g(X_i)$,
-  $X_i\sim f$.
-- Monte Carlo standard error: $s_g/\sqrt n$.
-- Importance sampling estimator: $\hat\theta_{\text{IS}} =
-  n^{-1}\sum_i g(Y_i)w(Y_i)$, $w(x)=f(x)/p(x)$, $Y_i\sim p$.
-- Variance-minimizing proposal: $p^{*}(x) \propto |g(x)|f(x)$.
-- Self-normalized IS: $\hat\theta_{\text{SNIS}} = \dfrac{\sum_i
-  g(Y_i)\tilde w(Y_i)}{\sum_i \tilde w(Y_i)}$.
-- Rare-event relative error: $\text{se}(\hat\theta_{\text{MC}})/\theta
-  \approx 1/\sqrt{n\theta}$.
-
-# Key Terms
-
-- **Importance density (proposal).** The density $p$ from which
-  importance samples are actually drawn.
-- **Importance sampling.** Estimating an expectation by sampling from
-  an alternative distribution and reweighting.
-- **Importance weight.** The density ratio $w(x)=f(x)/p(x)$ used to
-  correct for sampling from $p$ instead of $f$.
-- **Monte Carlo integration.** Estimating a definite integral or
-  expectation by the sample average of simulated function evaluations.
-- **Rare-event simulation.** Estimation of a very small probability,
-  for which naive simulation is inefficient.
-- **Self-normalized importance sampling.** An importance sampling
-  variant usable when the target density is known only up to a
-  constant.
-- **Weight degeneracy.** The failure mode in which a small number of
-  importance weights dominate the estimator, inflating its variance.
+- Always report a standard error.
+- The proposal's tails must be at least as heavy as the target's. Otherwise the weights can have infinite variance.
+- Check the weights or $n_{\text{eff}}$.
+- Use self-normalized weights when the density is known only up to a constant.
+- For smooth, low-dimensional integrals, quadrature is faster. Monte Carlo wins as the dimension grows.
 
 # Exercises
 
-## Multiple Choice Questions
-
-1. Monte Carlo integration estimates $\theta=\int g(x)f(x)dx$ as
-   (a) the maximum of $g(X_i)$ over a sample
-   (b) the sample average of $g(X_i)$, $X_i\sim f$
-   (c) the median of $g(X_i)$
-   (d) a quadrature sum on a fixed grid
-
-2. The Monte Carlo estimator's standard error decreases with $n$ at
-   rate
-   (a) $O(1/n)$
-   (b) $O(1/\sqrt n)$
-   (c) $O(1/n^2)$
-   (d) it does not decrease
-
-3. The importance sampling weight is defined as
-   (a) $p(x)/f(x)$
-   (b) $f(x)/p(x)$
-   (c) $f(x)p(x)$
-   (d) $g(x)/f(x)$
-
-4. The variance-minimizing importance density is proportional to
-   (a) $f(x)$ alone
-   (b) $p(x)$ alone
-   (c) $|g(x)|f(x)$
-   (d) $g(x)^2$
-
-5. When $g(x)\ge0$ everywhere, sampling from the ideal importance
-   density $p^{*}$ gives variance
-   (a) equal to the naive Monte Carlo variance
-   (b) exactly zero
-   (c) infinite
-   (d) undefined
-
-6. Self-normalized importance sampling is used when
-   (a) the proposal is unknown
-   (b) the target density is known only up to a normalizing constant
-   (c) $g$ is not integrable
-   (d) $n$ is very small
-
-7. The relative standard error of a naive Monte Carlo probability
-   estimator behaves, for small $\theta$, like
-   (a) $\sqrt{\theta/n}$
-   (b) $1/\sqrt{n\theta}$
-   (c) $n\theta$
-   (d) $\theta^2/n$
-
-8. A proposal with a lighter tail than the target can cause importance
-   weights to have
-   (a) zero variance
-   (b) infinite variance
-   (c) exactly unit variance
-   (d) no effect on variance
-
-9. Self-normalized importance sampling is
-   (a) unbiased for every $n$
-   (b) biased for finite $n$ but consistent
-   (c) always inconsistent
-   (d) identical to ordinary importance sampling
-
-10. A histogram of importance weights showing a few extremely large
-    values relative to the rest indicates
-    (a) an ideal proposal
-    (b) weight degeneracy, a poorly matched proposal
-    (c) that self-normalization is unnecessary
-    (d) that $n$ is too large
-
-**Answers.** 1(b), 2(b), 3(b), 4(c), 5(b), 6(b), 7(b), 8(b), 9(b),
-10(b).
-
-## Short Answer Questions
-
-1. Explain how a definite integral $\int_a^b h(x)dx$ can be rewritten
-   as an expectation suitable for Monte Carlo estimation.
-2. State the standard error formula for the simple Monte Carlo
-   estimator and explain its dependence on $n$.
-3. Define the importance weight and explain its role in correcting for
-   sampling from $p$ rather than $f$.
-4. State the variance-minimizing importance density from Theorem 3.2.
-5. Explain why the zero-variance ideal importance sampler is not
-   directly usable in practice.
-6. Explain, using equation (3.7), why naive Monte Carlo performs
-   poorly for rare-event probabilities.
-7. What is weight degeneracy, and how can it be diagnosed?
-8. Explain the difference between ordinary and self-normalized
-   importance sampling, and when each is used.
-9. Explain the connection between importance sampling and the
-   exponential tilting technique of Unit 3.4.
-10. Give one application, distinct from those emphasized in this unit,
-    where importance sampling would be valuable.
-
-## Long Answer Questions
-
-1. State and prove Theorem 3.1 (unbiasedness and consistency of Monte
-   Carlo estimators), including the importance sampling case.
-2. State and prove Theorem 3.2 (the variance-minimizing importance
-   density), explaining the role of the Cauchy-Schwarz inequality.
-3. Derive equation (3.7) (the relative standard error of a naive
-   Monte Carlo probability estimator) and explain its implications for
-   rare-event simulation.
-4. Derive the self-normalized importance sampling estimator (3.6) from
-   first principles, explaining why it remains valid when only an
-   unnormalized target is available.
-5. Compare Monte Carlo integration and the quadrature methods of Unit
-   4.2 in terms of convergence rate and dependence on dimension,
-   explaining when each should be preferred.
-6. Discuss the design principle "shape the proposal like $|g|f$" in
-   practical terms, using the shifted-Normal proposal of this unit's
-   examples as a concrete illustration.
-7. Explain, with reference to Unit 3.4, how exponential tilting can be
-   used as an importance sampling proposal for rare-event probability
-   estimation, and why its efficiency improves as the event becomes
-   rarer.
-8. Discuss the risk of importance sampling producing an estimator with
-   *higher* variance than naive Monte Carlo, and describe how to guard
-   against this in practice.
-9. Explain the role of Monte Carlo and importance sampling methods in
-   Bayesian computation, distinguishing their use from Markov chain
-   Monte Carlo methods.
-10. Discuss, using the extreme-threshold simulation of Section 10.3,
-    why naive Monte Carlo can return an estimate of exactly zero for a
-    rare event, and why this is a more serious failure than merely a
-    large standard error.
-
-## Programming Exercises
-
-1. Implement `monte_carlo_integrate()` from first principles (already
-   provided) and reproduce the manual calculation of Example 1 with a
-   large random sample, comparing the result to the true value.
-2. Implement `importance_sampling_estimate()` from first principles
-   (already provided) and reproduce the weight calculations of Example
-   3 exactly.
-3. Implement `self_normalized_is()` from first principles (already
-   provided) and use it to estimate $E[X^2]$ for a target density
-   known only up to a constant (for example, an unnormalized Normal
-   kernel), comparing to the known closed-form answer.
-4. Reproduce the variance reduction comparison of Section 10.2 for a
-   different threshold (for example, $P(Z>2)$), and report the
-   variance reduction factor achieved.
-5. Investigate importance sampling failure: use a proposal with a
-   *lighter* tail than the target (for example, target $t_3$, proposal
-   $N(0,1)$) to estimate $E[X^2]$, and demonstrate empirically that the
-   importance weights have very high (or, in the limit, infinite)
-   variance, producing an unreliable estimator.
-6. Use self-normalized importance sampling to estimate the posterior
-   mean of a parameter under a simple Bayesian model (for example, a
-   Beta-Binomial model) using only the unnormalized posterior kernel,
-   and compare to the known closed-form posterior mean.
-7. Write a function that automatically flags weight degeneracy (for
-   example, by computing the effective sample size
-   $n_{\text{eff}} = (\sum_i w_i)^2/\sum_i w_i^2$) and apply it to both
-   a well-matched and a poorly matched importance sampling example.
-8. Compare, using `system.time()`, the sample size required by naive
-   Monte Carlo versus importance sampling to achieve the same
-   standard error when estimating $P(Z>4)$, and report the
-   computational savings.
-9. Extend the rare-event simulation of Section 10.3 to a
-   two-dimensional rare event (for example,
-   $P(Z_1>3, Z_2>3)$ for independent standard Normals), using a
-   bivariate shifted-Normal proposal.
-10. Implement Monte Carlo integration of a genuinely
-    high-dimensional integral (for example, the volume of a
-    10-dimensional unit ball, with known closed-form value), and
-    compare its accuracy and computational cost to what a naive grid-
-    based quadrature approach would require, to illustrate the
-    dimension-free convergence rate discussed in this unit.
-
-## Mini Projects
-
-1. **Importance sampling for option pricing.** Simulate the price of a
-   deep out-of-the-money European call option under the standard
-   Black-Scholes model (i.e., the terminal asset price is log-normal),
-   where the option payoff is non-zero only in a rare tail event. Using
-   naive Monte Carlo and an importance sampling scheme that shifts the
-   simulated terminal price distribution toward the option's strike
-   price, compare the standard errors of the two estimators for a
-   fixed computational budget, and discuss the practical implications
-   for pricing deep out-of-the-money options.
-
-2. **A rare-event simulation toolkit with effective sample size
-   diagnostics.** Build a small R toolkit implementing naive Monte
-   Carlo, importance sampling, and self-normalized importance
-   sampling for a class of rare-event probability estimation problems
-   of your choosing (for example, tail probabilities of a Gamma or
-   Weibull distribution relevant to reliability engineering). Include
-   automatic computation of the effective sample size and a diagnostic
-   warning when importance weights show signs of degeneracy. Apply
-   your toolkit across a range of thresholds, from moderately rare to
-   extremely rare, and produce a report documenting how the required
-   proposal shift changes with the rarity of the event.
-
-**Difficulty labels.** Multiple choice, short answer: **Easy**. Long
-answer questions 3, 4, 6, 8, 9, programming exercises 1-6: **Medium**.
-Long answer questions 1, 2, 5, 7, 10, programming exercises 7-10:
-**Medium to Advanced**. Mini projects: **Advanced**.
-
-# References
-
-Glynn, P. W., & Iglehart, D. L. (1989). Importance sampling for
-stochastic simulations. *Management Science*, 35(11), 1367-1392.
-
-Owen, A. B. (2013). *Monte Carlo theory, methods and examples*.
-Self-published.
-
-Rizzo, M. L. (2019). *Statistical computing with R* (2nd ed.). CRC
-Press.
-
-Robert, C. P., & Casella, G. (2004). *Monte Carlo statistical
-methods* (2nd ed.). Springer.
-
-Ross, S. M. (2020). *Simulation* (6th ed.). Academic Press.
+1. Estimate $\int_0^1 x^2\,dx$ by Monte Carlo and give a 95% interval. The true value is $1/3$.
+2. Estimate $\pi$ by simulation. Draw $(U_1,U_2)$ uniform on the unit square and use $4 \times P(U_1^2+U_2^2<1)$.
+3. Estimate $P(Z>3)$ both ways. What is the ratio of the variances?
+4. In Example 3, change the proposal to $N(2,1)$ and then to $N(6,1)$. Compare the SE and $n_{\text{eff}}$.
+5. Use a proposal with a lighter tail than the target (target $t_3$, proposal $N(0,1)$) to estimate $E[X^2]$. Look at the weights.
